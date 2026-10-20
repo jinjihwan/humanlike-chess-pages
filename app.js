@@ -1,0 +1,189 @@
+import { Chess } from 'chess.js';
+import {ratingBucket,moveUci, gamesOf, evaluateBook, weightedChoice} from './book.js';
+
+'use strict';
+const $ = id => document.getElementById(id);
+const PIECES={k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟',K:'♚',Q:'♛',R:'♜',B:'♝',N:'♞',P:'♟'};
+const NAMES={k:'킹',q:'퀸',r:'룩',b:'비숍',n:'나이트',p:'폰'};
+const SPEED_LABELS={bullet:'불릿',blitz:'블리츠',rapid:'래피드',classical:'클래시컬'};
+const START_FEN='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const BOOK_LIMIT=30;
+const MODEL_URL='https://huggingface.co/cemoss17/maia3-onnx/resolve/main/maia3_5m.onnx';
+const WASM_URL='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+let game=null, activeColor='white', busy=false, selected=null, promotionOptions=null;
+let lichessToken='', maia=null, maiaPromise=null, recentBookErrors=0;
+const escapeHtml = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const shortNum = n => Number(n).toLocaleString('ko-KR');
+const currentColor = () => game?.options.color || activeColor;
+const toColor = c => c==='w'?'white':'black';
+function placementMap(fen){const map={};fen.split(' ')[0].split('/').forEach((row,ri)=>{let fi=0;for(const c of row){if(/[1-8]/.test(c)){fi+=Number(c)}else{map['abcdefgh'[fi]+String(8-ri)]=c;fi++}}});return map}
+function isPlaying(){return game && !game.resigned && !game.chess.isGameOver()}
+function isHumanTurn(){return isPlaying() && toColor(game.chess.turn())===game.options.color}
+function playableMoves(){return isHumanTurn()?game.chess.moves({verbose:true}):[]}
+function getSettings(){return {elo:Number($('elo').value),color:activeColor,speed:$('speed').value,minGames:Number($('min-games').value),startMode:$('start-mode').value,startMoves:$('start-moves').value.trim(),startFen:$('start-fen').value.trim()}}
+function setBusy(flag,bot=false){busy=flag;$('board-wait').classList.toggle('hidden',!flag||!bot);$('start-button').disabled=flag;$('top-new').disabled=flag;renderBoard();renderControls()}
+function showError(message){const a=$('alert');a.textContent=message;a.classList.remove('hidden')}
+function clearError(){$('alert').classList.add('hidden')}
+function setMessage(message){$('move-feedback').textContent=message}
+
+function configurePosition(opts){
+  let chess=new Chess();let baseFen=START_FEN;let setupCount=0;
+  if(opts.startMode==='fen'){
+    if(!opts.startFen || opts.startFen.trim().split(/\s+/).length!==6) throw new Error('FEN은 6개 항목을 모두 입력해 주세요.');
+    chess=new Chess(opts.startFen);
+    baseFen=chess.fen();
+  } else if(opts.startMode==='moves'){
+    if(!opts.startMoves)throw new Error('시작할 오프닝 수순을 입력해 주세요.');
+    const s=opts.startMoves.replace(/\{[^}]*\}/g,' ').replace(/\([^)]*\)/g,' ').replace(/\d+\s*\.{1,3}/g,' ').replace(/\b(?:1-0|0-1|1\/2-1\/2|\*)\b/g,' ');
+    const toks=s.trim().split(/\s+/).filter(Boolean);
+    if(toks.length>80)throw new Error('시작 수순은 최대 80반수까지 입력할 수 있어요.');
+    for(const [i,tok] of toks.entries()){
+      try{chess.move(tok.replace(/0-0-0/g,'O-O-O').replace(/0-0/g,'O-O'))}
+      catch(_){throw new Error(`${i+1}번째 수 '${tok}'를 이해하지 못했습니다.`)}
+    }
+    setupCount=chess.history().length;
+  }
+  if(chess.isGameOver())throw new Error('이미 대국이 종료된 위치에서는 시작할 수 없습니다.');
+  return {chess,baseFen,setupCount};
+}
+function drawSquares(container,pieces,preview=false,legal=[]){
+ const whiteBottom=currentColor()==='white',ranks=whiteBottom?[8,7,6,5,4,3,2,1]:[1,2,3,4,5,6,7,8];
+ const files=whiteBottom?'abcdefgh':'hgfedcba';const targets=new Set(legal.filter(m=>m.from===selected).map(m=>m.to));const fragment=document.createDocumentFragment();
+ ranks.forEach((rank,ri)=>{for(let fi=0;fi<8;fi++){
+   const file=files[fi],sq=file+rank,pc=pieces[sq],light=('abcdefgh'.indexOf(file)+rank)%2===0;
+   const b=document.createElement(preview?'div':'button');if(!preview)b.type='button';
+   b.className=`${preview?'preview-square':'square'} ${light?'light':'dark'}`;
+   if(!preview){b.dataset.square=sq;if(selected===sq)b.classList.add('selected');if(game?.lastMove && [game.lastMove.from,game.lastMove.to].includes(sq))b.classList.add('last-move');
+     if(game?.chess.isCheck() && game.chess.get(sq)?.type==='k' && game.chess.get(sq)?.color===game.chess.turn())b.classList.add('checked');
+     if(targets.has(sq))b.classList.add('legal-target');b.addEventListener('click',()=>clickSquare(sq));
+     b.setAttribute('aria-label',`${sq} ${pc ? ((pc===pc.toUpperCase())?'백 ':'흑 ')+(NAMES[pc.toLowerCase()]||'기물'):'빈 칸'}`);
+   }
+   if(pc){if(!preview)b.classList.add('occupied');const span=document.createElement('span');span.className=(preview?'':'piece ')+(pc===pc.toUpperCase()?'white-piece':'black-piece');span.textContent=PIECES[pc];b.append(span)}
+   if(!preview){if(fi===0){const c=document.createElement('span');c.className='coordinate rank';c.textContent=rank;b.append(c)}if(ri===7){const c=document.createElement('span');c.className='coordinate file';c.textContent=file;b.append(c)}}fragment.append(b)
+ }});container.replaceChildren(fragment);
+}
+function renderBoard(){drawSquares($('board'),placementMap(game?.chess.fen()||START_FEN),false,!busy?playableMoves():[])}
+function clickSquare(square){if(busy||!isHumanTurn())return;const moves=playableMoves();if(selected){const possibilities=moves.filter(m=>m.from===selected&&m.to===square);if(possibilities.length===1){selected=null;void humanMove(possibilities[0]);return}if(possibilities.length>1){promotionOptions=possibilities;showPromotion();return}}selected=moves.some(m=>m.from===square)?square:null;renderBoard()}
+function showPromotion(){const popup=$('promotion-modal'),choices=$('promotion-choices');choices.replaceChildren();for(const kind of ['q','r','b','n']){const m=promotionOptions.find(x=>x.promotion===kind);if(!m)continue;const btn=document.createElement('button');btn.type='button';btn.textContent=PIECES[currentColor()==='white'?kind.toUpperCase():kind];btn.setAttribute('aria-label',`${NAMES[kind]}으로 승격`);btn.addEventListener('click',()=>{closePromotion();selected=null;void humanMove(m)});choices.append(btn)}popup.classList.remove('hidden')}
+function closePromotion(){$('promotion-modal').classList.add('hidden');promotionOptions=null}
+function setStartMode(){$('start-moves-area').classList.toggle('hidden',$('start-mode').value!=='moves');$('start-fen-area').classList.toggle('hidden',$('start-mode').value!=='fen');$('position-preview').classList.add('hidden');$('preview-error').classList.add('hidden')}
+function previewPosition(){try{const p=configurePosition(getSettings());drawSquares($('preview-board'),placementMap(p.chess.fen()),true);$('preview-meta').textContent=`다음 차례: ${p.chess.turn()==='w'?'백':'흑'} · ${toColor(p.chess.turn())===activeColor?'내가 먼저':'봇이 먼저'}`;$('preview-fen').textContent=p.chess.fen();$('position-preview').classList.remove('hidden');$('preview-error').classList.add('hidden')}catch(e){$('preview-error').textContent=e.message;$('preview-error').classList.remove('hidden')}}
+
+function renderControls(){if(!game){$('turn-pill').textContent='대국 대기 중';$('move-feedback').textContent='새 대국을 시작하세요';$('undo-button').disabled=true;$('pgn-button').disabled=true;$('resign-button').disabled=true;$('start-position-label').classList.add('hidden');return}
+ const over=!isPlaying(),me=game.options.color==='black',ch=game.chess;
+ $('top-player').textContent=`Humanlike Bot · ${game.options.elo}`;$('top-player-sub').textContent='Lichess + Maia3-5M ONNX';$('bottom-player-sub').textContent=me?'흑으로 플레이':'백으로 플레이';
+ $('turn-pill').textContent=over?'대국 종료':ch.turn()==='w'?'백 차례':'흑 차례';
+ if(over){$('move-feedback').textContent=game.resigned?'기권했습니다':ch.isCheckmate()?(toColor(ch.turn())===game.options.color?'패배':'승리'):'무승부'} else $('move-feedback').textContent=isHumanTurn()?(ch.isCheck()?'체크 · 내 차례':'내 차례'):'봇 차례';
+ $('undo-button').disabled=busy||over||game.chess.history().length<game.setupCount+(game.initialBotTurn?2:1);
+ $('pgn-button').disabled=busy;$('resign-button').disabled=busy||over;
+ $('start-button').innerHTML='새 대국 시작하기 <span aria-hidden="true">→</span>';
+ const s=$('start-position-label');if(game.options.startMode!=='standard'){s.classList.remove('hidden');s.textContent=game.options.startMode==='moves'?`시작 수순: ${game.options.startMoves}`:`사용자 지정 FEN · ${game.baseFen}`}else s.classList.add('hidden');
+}
+function insightRow(x,selected=false){const pct=Number(x.percent)||0;return `<div class="stat-row"><span class="name">${escapeHtml(x.san)}</span><div class="stat-bar"><div class="stat-fill ${selected?'selected-fill':''}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div><span class="pct">${pct.toFixed(1)}%</span></div>`}
+function renderStats(){const el=$('stats-content'),tag=$('source-tag'),report=game?.lastBot;
+ if(!report){tag.textContent='대기';el.innerHTML='<div class="empty-insight"><div class="empty-icon">◈</div><strong>착수 데이터가 여기에 표시돼요</strong><p>봇이 수를 두면 선택 비율과 다른 주요 후보가 나타납니다.</p></div>';return}
+ if(report.source==='maia'){tag.textContent='MAIA-3';el.innerHTML=`<div class="maia-note"><h3>${escapeHtml(report.move)} · Maia-3</h3><p>전환 사유: ${escapeHtml(report.reason)}</p><p>이 수는 브라우저에서 Maia-3 ONNX가 예측했으며, Lichess 등장 비율은 제공하지 않습니다.</p></div>`;return}
+ tag.textContent='LICHESS DATA';const selected=report.selected;
+ el.innerHTML=`<div class="insight-heading"><div><small>봇이 선택한 수</small><strong>${escapeHtml(selected.san)}</strong></div><span class="insight-percent">${selected.percent.toFixed(1)}%</span></div><p class="insight-desc">실제 ${shortNum(selected.count)} / ${shortNum(report.total)}판에서 선택</p>${insightRow(selected,true)}<div class="alternative-title">다른 주요 후보</div>${report.alternatives.map(x=>insightRow(x)).join('')||'<p class="insight-desc">다른 주요 후보 없음</p>'}<div class="insight-footer">${escapeHtml(SPEED_LABELS[report.speed])} · 레이팅 ${report.bucket} 구간 · 전체 ${shortNum(report.total)}판<br/>조회 후보 포함 비율 ${(100*report.represented/report.total).toFixed(1)}%<br/>선택 확률이며 엔진 정확도·승률이 아닙니다.</div>`;
+}
+function renderHistory(){const list=$('move-list');if(!game){list.innerHTML='<p class="empty-moves">아직 진행한 수가 없습니다.</p>';$('move-count').textContent='0수';return}
+ const moves=game.chess.history({verbose:true});$('move-count').textContent=`${Math.max(0,moves.length-game.setupCount)}반수 진행`;
+ const start=new Chess(game.baseFen);let number=start.moveNumber(),turn=start.turn();
+ // Derive actual SAN number from FEN; preserve setup moves for moves-based starts.
+ let i=0,html=[];while(i<moves.length){const m=moves[i],n=number;let white='',black='';if(turn==='w'){white=m.san;i++;turn='b';if(i<moves.length){black=moves[i].san;i++;turn='w';number++}}else{black=m.san;i++;turn='w';number++}
+ const flags=(first,last)=>`<span class="move-san ${first?'setup-move':''} ${last?'latest':''}">${escapeHtml(first&&first.san?first.san:last)}</span>`;
+ const firstIndex=i-(white&&black?2:1);let row=`<div class="move-row"><span class="move-number">${n}${white?'.':'...'}</span>`;
+ row+=white?`<span class="move-san ${firstIndex<game.setupCount?'setup-move':''}">${escapeHtml(white)}</span>`:'<span class="move-san">—</span>';
+ row+=black?`<span class="move-san ${(i-1)<game.setupCount?'setup-move':''}">${escapeHtml(black)}</span>`:'<span class="move-san">—</span>';
+ html.push(row+'</div>'); }
+ list.innerHTML=html.join('')||'<p class="empty-moves">아직 진행한 수가 없습니다.</p>';list.scrollTop=list.scrollHeight;
+}
+function render(){renderBoard();renderControls();renderStats();renderHistory()}
+
+function plyOf(chess){const f=chess.fen().split(' ');return (Number(f[5])-1)*2+(f[1]==='b'?1:0)}
+function priorFens(){const replay=new Chess(game.baseFen),out=[];for(const move of game.chess.history({verbose:true})){out.push(replay.fen());replay.move(move)}return out.slice(-8)}
+function bookReason(ch){if(plyOf(ch)>=BOOK_LIMIT)return `오프닝 제한 ${BOOK_LIMIT}반수 초과`;if(!lichessToken)return 'Lichess 토큰 미입력';if(recentBookErrors>=3)return 'Lichess 오류가 반복되어 잠시 통계 조회 중지';return ''}
+async function getBookChoice(){
+ const ch=game.chess,why=bookReason(ch);if(why)return {reason:why};
+ const params=new URLSearchParams({variant:'standard',ratings:String(ratingBucket(game.options.elo)),speeds:game.options.speed,moves:'16',topGames:'0',recentGames:'0'});
+ if(game.options.startMode==='fen')params.set('fen',ch.fen());else params.set('play',ch.history({verbose:true}).map(moveUci).join(','));
+ const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),22000);
+ try{
+  const resp=await fetch(`https://explorer.lichess.org/lichess?${params}`,{headers:{Authorization:`Bearer ${lichessToken}`,Accept:'application/json'},mode:'cors',credentials:'omit',cache:'no-store',signal:controller.signal});
+  if(!resp.ok)throw new Error(`Lichess HTTP ${resp.status}`);
+  const data=await resp.json(),legal=ch.moves({verbose:true}),valid=evaluateBook(data,legal.map(moveUci),game.options.minGames,0.9);
+  recentBookErrors=0;
+  if(!valid.ok)return {reason:valid.reason};
+  const choice=weightedChoice(valid.rows),picked=legal.find(m=>moveUci(m)===choice.uci);
+  const percent=e=>100*e.count/valid.total;
+  const report={source:'lichess',selected:{san:picked.san,percent:percent(choice),count:choice.count},alternatives:valid.rows.filter(x=>x.uci!==choice.uci).slice(0,3).map(x=>({san:x.san,percent:percent(x),count:x.count})),total:valid.total,represented:valid.represented,bucket:ratingBucket(game.options.elo),speed:game.options.speed};
+  return {move:picked,report};
+ }catch(error){recentBookErrors++;return {reason:`통계 API ${error?.name==='AbortError'?'시간 초과':(error?.message||'연결 오류')}`}}
+ finally{clearTimeout(timer)}
+}
+async function prepareMaia(){
+ if(maia)return maia;
+ if(maiaPromise)return maiaPromise;
+ maiaPromise=(async()=>{
+   setMessage('Maia-3 엔진 다운로드 및 초기화 중…');$('model-status').textContent='AI 엔진 다운로드 및 초기화 중…';
+   const ort=await import('onnxruntime-web');
+   ort.env.wasm.wasmPaths=WASM_URL;
+   ort.env.wasm.numThreads=1;
+   const {Maia3}=await import('maia3-js/web');
+   const m=new Maia3({variant:'5m',url:MODEL_URL,executionProviders:['wasm'],temperature:1,topP:1,topK:1,onProgress:(loaded,total)=>{if(total>0){const txt=`Maia-3 모델 다운로드 ${Math.round(100*loaded/total)}%`;setMessage(txt);$('model-status').textContent=txt}}});
+   await m.load();maia=m;$('model-status').textContent='Maia-3 5M 모델 로딩 성공. 브라우저에서 사용할 수 있습니다.';return m;
+ })();
+ try{return await maiaPromise}catch(e){maiaPromise=null;$('model-status').textContent=`모델 로딩 실패: ${e.message||e}`;throw new Error(`Maia-3 초기화 실패: ${e.message||e}. 네트워크 또는 브라우저 호환성을 확인하세요.`)}
+}
+async function getMaiaMove(){const m=await prepareMaia();const legal=game.chess.moves({verbose:true}),result=await m.predict({fen:game.chess.fen(),priorFens:priorFens(),selfElo:game.options.elo,oppoElo:game.options.elo,temperature:1,topP:1,topK:5});
+ const uci=result.bestMove;const pick=legal.find(x=>moveUci(x)===uci);
+ if(!pick)throw new Error(`Maia-3가 현재 포지션에 합법적이지 않은 수를 반환했습니다 (${uci||'없음'}).`);
+ return pick}
+async function botTurn(){if(!game||!isPlaying()||isHumanTurn())return;
+ const current=game;setBusy(true,true);clearError();
+ try{const choice=await getBookChoice();const move=choice.move||await getMaiaMove();
+   if(current!==game)return;
+   game.lastBot=choice.move?choice.report:{source:'maia',move:move.san,reason:choice.reason};
+   game.chess.move(move);game.lastMove={from:move.from,to:move.to};selected=null;setMessage('봇이 착수했습니다');
+ }catch(e){showError(e.message+' — 연결을 확인한 뒤 아래 「봇 착수 다시 시도」를 눌러 주세요.');$('retry-bot').classList.remove('hidden')}
+ finally{setBusy(false);render()}
+}
+async function humanMove(move){if(busy||!isHumanTurn())return;
+ try{const result=game.chess.move(move);if(!result)return;game.lastMove={from:result.from,to:result.to};selected=null;game.lastBot=null;render();if(isPlaying()&&!isHumanTurn())await botTurn()}
+ catch(e){showError('이동할 수 없습니다: '+e.message)}
+}
+async function startGame(){if(busy)return;clearError();
+ try{const opts=getSettings(),s=configurePosition(opts);game={...s,options:opts,lastBot:null,lastMove:null,resigned:false,initialBotTurn:toColor(s.chess.turn())!==opts.color};recentBookErrors=0;selected=null;$('retry-bot').classList.add('hidden');render();if(isPlaying()&&!isHumanTurn())await botTurn()}
+ catch(e){showError(e.message)}
+}
+function undo(){if(busy||!game||game.chess.history().length<game.setupCount+(game.initialBotTurn?2:1))return;
+ game.chess.undo();if(!isHumanTurn()&&game.chess.history().length>game.setupCount)game.chess.undo();
+ game.lastBot=null;game.lastMove=null;selected=null;$('retry-bot').classList.add('hidden');clearError();render();if(!isHumanTurn()&&isPlaying())void botTurn()}
+function exportPgn(){if(!game)return;const ch=game.chess;ch.setHeader('Event','Humanlike Browser Chess');ch.setHeader('White',game.options.color==='white'?'Human':'Maia/Lichess');ch.setHeader('Black',game.options.color==='black'?'Human':'Maia/Lichess');ch.setHeader('Result',game.resigned?(game.options.color==='white'?'0-1':'1-0'):ch.isGameOver()?(ch.isCheckmate()?(ch.turn()==='w'?'0-1':'1-0'):'1/2-1/2'):'*');
+ const blob=new Blob([ch.pgn()],{type:'application/x-chess-pgn;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='humanlike-chess.pgn';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500)}
+async function testToken(){const token=$('lichess-token').value.trim();if(!token){$('token-status').textContent='먼저 토큰을 입력해 주세요.';return}
+ $('test-token').disabled=true;$('token-status').textContent='Lichess API 연결 중…';
+ const params=new URLSearchParams({variant:'standard',play:'d2d4',ratings:'1400',speeds:'blitz',moves:'8',topGames:'0',recentGames:'0'});
+ try{const resp=await fetch('https://explorer.lichess.org/lichess?'+params,{mode:'cors',credentials:'omit',cache:'no-store',headers:{Authorization:'Bearer '+token}});
+   if(!resp.ok)throw new Error('HTTP '+resp.status);
+   const data=await resp.json();if(!Array.isArray(data.moves))throw new Error('응답 형식 오류');lichessToken=token;$('lichess-token').value='';$('token-status').textContent=`연결 성공 · 1.d4 통계 ${shortNum(gamesOf(data))}판 · 현재 탭 메모리에만 토큰 보관`;
+ }catch(e){$('token-status').textContent=`통계 연결 실패: ${e.message}. 토큰을 확인하거나 나중에 재시도하세요.`}
+ finally{$('test-token').disabled=false}
+}
+function init(){
+ $('server-indicator').classList.add('online');$('server-indicator').querySelector('span').textContent='브라우저 모드';
+ $('elo').addEventListener('input',()=>{$('elo-label').textContent=$('elo').value});
+ $('start-mode').addEventListener('change',setStartMode);
+ $('opening-preset').addEventListener('change',()=>{if($('opening-preset').value)$('start-moves').value=$('opening-preset').value;$('position-preview').classList.add('hidden')});
+ for(const id of ['start-moves','start-fen'])$(id).addEventListener('input',()=>{$('position-preview').classList.add('hidden')});
+ $('preview-position').addEventListener('click',previewPosition);$('test-token').addEventListener('click',()=>void testToken());
+ $('test-maia').addEventListener('click',async()=>{$('test-maia').disabled=true;try{await prepareMaia();const result=await maia.predict({fen:START_FEN,selfElo:1500,oppoElo:1500,temperature:1,topK:1});if(!result.bestMove)throw new Error('AI가 수를 반환하지 않았습니다.');$('model-status').textContent=`AI 착수 예측 성공 (${result.bestMove}). 실제 기기에서 작동합니다.`}catch(e){$('model-status').textContent=e.message}finally{$('test-maia').disabled=false}});
+ for(const b of document.querySelectorAll('[data-color]'))b.addEventListener('click',()=>{activeColor=b.dataset.color;document.querySelectorAll('[data-color]').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b))});if(!game)renderBoard()});
+ $('start-button').addEventListener('click',()=>void startGame());$('top-new').addEventListener('click',()=>void startGame());
+ $('undo-button').addEventListener('click',undo);$('pgn-button').addEventListener('click',exportPgn);
+ $('resign-button').addEventListener('click',()=>{if(game&&!busy&&isPlaying()&&confirm('정말 기권하시겠습니까?')){game.resigned=true;render()}});
+ $('retry-bot').addEventListener('click',()=>{if(!busy){$('retry-bot').classList.add('hidden');void botTurn()}});
+ $('promotion-cancel').addEventListener('click',()=>{closePromotion();renderBoard()});document.addEventListener('keydown',e=>{if(e.key==='Escape'&&promotionOptions){closePromotion();renderBoard()}});
+ setStartMode();render();
+}
+init();

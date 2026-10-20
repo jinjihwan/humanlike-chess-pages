@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#101820" />
+  <meta name="description" content="Lichess 실제 오프닝 수 선택 통계와 Maia-3의 인간형 착수 모델로 대국하는 체스 웹앱" />
+  <title>Humanlike Chess — 사람처럼 두는 체스</title>
+  <link rel="stylesheet" href="./style.css?v=pages-1" />
+  <meta name="referrer" content="no-referrer" />
+  <script type="importmap">
+  {"imports": {
+    "chess.js": "https://esm.sh/chess.js@1.4.0",
+    "maia3-js/web": "https://esm.sh/maia3-js@0.2.0/web?external=onnxruntime-web",
+    "onnxruntime-web": "https://esm.sh/onnxruntime-web@1.22.0"
+  }}
+  </script>
+  <script type="module" src="./app.js?v=pages-1"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><div class="brand-icon" aria-hidden="true">♞</div><div><strong>humanlike<span class="brand-dot">.</span>chess</strong><small>PLAY HUMAN, NOT PERFECT.</small></div></div>
+      <div class="top-actions"><span class="server-indicator" id="server-indicator"><i></i><span>브라우저 실행</span></span><button class="button button-outline top-new" id="top-new" type="button">＋ 새 대국</button></div>
+    </header>
+
+    <section class="heading-area">
+      <div><div class="eyebrow"><span class="eyebrow-line"></span> THE HUMAN CHESS EXPERIMENT</div><h1>사람처럼 두는 <em>체스.</em></h1><p>최선의 수보다, 실제 사람이 둘 법한 수와 대국하세요. 설치 없는 모바일 버전.</p></div>
+      <span class="version-badge">GITHUB PAGES <span>×</span> MAIA-3</span>
+    </section>
+
+    <main class="main-grid">
+      <section class="play-column" aria-label="체스 대국">
+        <div class="player-strip upper-strip"><div class="player-avatar bot-avatar" aria-hidden="true">♞</div><div class="player-info"><strong id="top-player">Humanlike Bot</strong><small id="top-player-sub">Lichess + Maia-3</small></div><div class="turn-pill" id="turn-pill">대국 대기 중</div></div>
+
+        <div class="board-wrap" id="board-wrap">
+          <div id="board" class="board" role="group" aria-label="체스판"></div>
+          <div class="board-wait hidden" id="board-wait" role="status"><span class="wait-loader"></span><strong>봇이 수를 고르는 중...</strong><small>Lichess 통계 · Maia-3</small></div>
+        </div>
+
+        <div class="player-strip lower-strip"><div class="player-avatar human-avatar" aria-hidden="true">◎</div><div class="player-info"><strong>나 <span class="you-label">YOU</span></strong><small id="bottom-player-sub">백으로 플레이</small></div><span id="move-feedback" class="feedback">새 대국을 시작하세요</span></div>
+
+        <div id="start-position-label" class="position-start-label hidden"></div>
+        <div class="board-toolbar"><div class="toolbar-help"><span class="help-dot"></span> 기물을 누르고 이동할 칸을 선택하세요</div><div class="toolbar-actions"><button id="undo-button" class="text-button" type="button" disabled>↶ 되돌리기</button><button id="pgn-button" class="text-button" type="button" disabled>↓ PGN 저장</button><button id="resign-button" class="text-button danger-button" type="button" disabled>기권</button></div></div>
+        <div id="alert" class="alert hidden" role="alert"></div><button type="button" id="retry-bot" class="button button-outline hidden" style="margin-top:10px;width:100%">봇 착수 다시 시도</button>
+      </section>
+
+      <aside class="sidebar" aria-label="대국 설정과 통계">
+        <section class="panel settings-panel">
+          <div class="panel-header"><div><span class="section-number">01 / SETTINGS</span><h2>대국 설정</h2></div><span class="panel-icon" aria-hidden="true">⚙</span></div>
+          <div class="field"><label for="elo">봇 레이팅 <strong id="elo-label">1500</strong></label><input id="elo" type="range" min="1000" max="2500" step="100" value="1500" /><div class="range-ends"><span>1000</span><span>2500</span></div></div>
+          <div class="field"><label>내 기물</label><div class="segment" role="radiogroup" aria-label="내 기물"><button type="button" data-color="white" aria-pressed="true" class="active"><span class="mini-chess-piece white-symbol">♚</span> 백</button><button type="button" data-color="black" aria-pressed="false"><span class="mini-chess-piece black-symbol">♚</span> 흑</button></div></div>
+          <div class="field field-half-group"><div><label for="speed">대국 시간제어 통계</label><select id="speed"><option value="blitz" selected>블리츠</option><option value="rapid">래피드</option><option value="bullet">불릿</option><option value="classical">클래시컬</option></select></div><div><label for="min-games">최소 표본</label><select id="min-games"><option value="100">100판</option><option value="500" selected>500판</option><option value="1000">1,000판</option></select></div></div>
+          <div class="field"><label for="model">Maia-3 모델</label><select id="model" disabled><option value="5m" selected>Maia3-5M · 브라우저 ONNX</option></select><p class="input-caption">Maia 모델 약 23MB를 다운로드해 기기에서 실행합니다. 기기별 속도는 다릅니다.</p><button type="button" id="test-maia" class="button button-outline preview-position-button">Maia-3 사전 로딩 테스트</button><p id="model-status" class="input-caption">아직 AI 모델을 로딩하지 않았습니다.</p></div>
+          <div class="field token-field"><label for="lichess-token">Lichess 개인 토큰</label><input id="lichess-token" type="password" autocomplete="off" spellcheck="false" placeholder="토큰을 직접 붙여넣기"/><button type="button" id="test-token" class="button button-outline preview-position-button">오프닝 통계 연결 확인</button><p class="input-caption" id="token-status">토큰은 GitHub나 로컬 저장소에 저장하지 않고, 이 탭의 메모리에만 유지합니다. 새로고침하면 다시 입력해야 합니다.</p></div>
+          <div class="field position-field">
+            <label for="start-mode">시작 포지션</label>
+            <select id="start-mode" class="position-select">
+              <option value="standard">기본 초기 배치</option>
+              <option value="moves">오프닝 수순으로 시작</option>
+              <option value="fen">FEN 포지션으로 시작</option>
+            </select>
+            <div id="start-moves-area" class="start-input-area hidden">
+              <label for="opening-preset">오프닝 예시</label>
+              <select id="opening-preset" class="position-select">
+                <option value="">직접 입력</option>
+                <option value="1. e4 c5">시실리안 디펜스 · 1.e4 c5</option>
+                <option value="1. d4 d5 2. c4">퀸즈 갬빗 · 1.d4 d5 2.c4</option>
+                <option value="1. e4 e5 2. Nf3 Nc6 3. Bc4">이탈리안 게임</option>
+                <option value="1. d4 Nf6 2. c4 g6">킹스 인디언 형태</option>
+              </select>
+              <label for="start-moves">시작할 수순 (SAN 또는 UCI)</label>
+              <textarea id="start-moves" rows="2" maxlength="1800" spellcheck="false" placeholder="예: 1. d4 Nf6 2. c4 e6"></textarea>
+              <p class="input-caption">입력한 수를 모두 적용한 뒤, 그 포지션에서 대국을 시작합니다.</p>
+            </div>
+            <div id="start-fen-area" class="start-input-area hidden">
+              <label for="start-fen">FEN (전체 6개 항목)</label>
+              <textarea id="start-fen" rows="3" maxlength="160" spellcheck="false" placeholder="예: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"></textarea>
+              <p class="input-caption">Lichess 분석 보드에서 FEN을 복사해 붙여넣을 수 있습니다. FEN의 차례가 적용됩니다.</p>
+            </div>
+            <button id="preview-position" type="button" class="button button-outline preview-position-button">시작 포지션 미리보기</button>
+            <div id="position-preview" class="position-preview hidden">
+              <div class="preview-meta" id="preview-meta"></div>
+              <div id="preview-board" class="preview-board" aria-label="시작 포지션 미리보기"></div>
+              <p id="preview-fen" class="preview-fen"></p>
+            </div>
+            <p id="preview-error" class="preview-error hidden" role="alert"></p>
+          </div>
+          <button id="start-button" class="button button-primary" type="button">대국 시작하기 <span aria-hidden="true">→</span></button>
+          <p class="field-hint">설정 변경은 새 대국을 시작할 때 적용됩니다.</p>
+        </section>
+
+        <section class="panel stats-panel">
+          <div class="panel-header"><div><span class="section-number">02 / MOVE INSIGHTS</span><h2>봇의 수 선택 분석</h2></div><span class="info-tag" id="source-tag">대기</span></div>
+          <div id="stats-content" class="stats-content"><div class="empty-insight"><div class="empty-icon">◈</div><strong>착수 데이터가 여기에 표시돼요</strong><p>봇이 수를 두면 실제 선택 빈도와 다른 주요 후보를 확인할 수 있습니다.</p></div></div>
+        </section>
+
+        <section class="panel history-panel"><div class="panel-header"><div><span class="section-number">03 / GAME RECORD</span><h2>대국 기보</h2></div><span id="move-count" class="move-counter">0수</span></div><div id="move-list" class="move-list"><p class="empty-moves">아직 진행한 수가 없습니다.</p></div></section>
+      </aside>
+    </main>
+
+    <footer class="site-footer"><span>HUMANLIKE CHESS · PERSONAL PROJECT</span><span>Lichess 데이터는 실시간 · AI 추론은 브라우저 로컬에서 실행합니다.</span></footer>
+  </div>
+
+  <div class="modal-overlay hidden" id="promotion-modal" role="dialog" aria-modal="true" aria-labelledby="promotion-title">
+    <div class="modal"><h2 id="promotion-title">프로모션할 기물을 선택하세요</h2><p>폰이 마지막 랭크에 도달했습니다.</p><div id="promotion-choices" class="promotion-choices"></div><button id="promotion-cancel" class="text-button" type="button">취소</button></div>
+  </div>
+</body>
+</html>
