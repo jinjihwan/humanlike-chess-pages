@@ -1,5 +1,6 @@
 import { Chess } from 'chess.js';
 import {ratingBucket,moveUci, gamesOf, evaluateBook, weightedChoice} from './book.js';
+import {LiveEngine,ENGINE_SCRIPT,formatWhiteScore,whitePerspective,sanVariation} from './engine-analysis.js';
 
 'use strict';
 const $ = id => document.getElementById(id);
@@ -12,6 +13,7 @@ const MODEL_URL='https://huggingface.co/cemoss17/maia3-onnx/resolve/main/maia3_5
 const WASM_URL='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 let game=null, activeColor='white', busy=false, selected=null, promotionOptions=null;
 let lichessToken='', maia=null, maiaPromise=null, recentBookErrors=0;
+let liveEngine=null, lastEngineEvaluation=null;
 const escapeHtml = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const shortNum = n => Number(n).toLocaleString('ko-KR');
 const currentColor = () => game?.options.color || activeColor;
@@ -98,7 +100,55 @@ function renderHistory(){const list=$('move-list');if(!game){list.innerHTML='<p 
  html.push(row+'</div>'); }
  list.innerHTML=html.join('')||'<p class="empty-moves">아직 진행한 수가 없습니다.</p>';list.scrollTop=list.scrollHeight;
 }
-function render(){renderBoard();renderControls();renderStats();renderHistory()}
+function render(){renderBoard();renderControls();renderStats();renderHistory();refreshAnalysis()}
+
+function renderAnalysis(data){
+ lastEngineEvaluation=data;
+ const area=$('analysis-content');
+ if(!$('analysis-toggle').checked)return;
+ if(!data||!data.lines.length){area.innerHTML='<p class="engine-empty">현재 포지션을 분석 중입니다…</p>';return}
+ // Stockfish info scores are reported from the SIDE TO MOVE; always display White's POV.
+ const top=data.lines.find(x=>x.rank===1);
+ if(!top){area.innerHTML='<p class="engine-empty">최선 수 분석 중…</p>';return}
+ const value=whitePerspective(top,data.fen);
+ const side=top.type==='mate'?(value>=0?'백 메이트 유리':'흑 메이트 유리'):(Math.abs(value)<25?'거의 균형':value>0?'백 우세':'흑 우세');
+ const header=`<div class="engine-score"><div><small>현재 엔진 평가 · 백 기준</small><strong>${escapeHtml(formatWhiteScore(top,data.fen))}</strong></div><span class="engine-score-side">${side}<br><span class="engine-depth">분석 깊이 ${data.depth}</span></span></div>`;
+ const lines=[1,2].map(rank=>{
+  const info=data.lines.find(x=>x.rank===rank);
+  if(!info)return `<div class="engine-line second"><div class="engine-line-top"><span class="engine-rank">${rank===1?'최선':'차선'}</span><span class="engine-depth">분석 중…</span></div></div>`;
+  const variations=sanVariation(Chess,data.fen,info.pv,5);
+  return `<div class="engine-line ${rank===2?'second':''}"><div class="engine-line-top"><span class="engine-rank">${rank===1?'최선 수':'차선 수'}</span><strong class="engine-move">${escapeHtml(variations[0]||info.pv[0]||'—')}</strong><span class="engine-eval">${escapeHtml(formatWhiteScore(info,data.fen))}</span></div><p class="engine-pv">${escapeHtml(variations.join(' → ')||'분석 중')}</p><span class="engine-depth">Depth ${info.depth}</span></div>`;
+ }).join('');
+ area.innerHTML=header+lines;
+}
+function setAnalysisStatus(message,error=false){const el=$('analysis-status');el.textContent=message;el.classList.toggle('error',error);$('analysis-tag').textContent=error?'ERROR':'ON'}
+function refreshAnalysis(){
+ if(!$('analysis-toggle').checked||!liveEngine?.worker)return;
+ const fen=game?.chess.fen()||START_FEN;
+ liveEngine.analyze(fen);
+}
+async function toggleAnalysis(){
+ const enabled=$('analysis-toggle').checked;
+ $('analysis-advanced').classList.toggle('hidden',!enabled);
+ $('analysis-off-desc').classList.toggle('hidden',enabled);
+ $('analysis-tag').textContent=enabled?'ON':'OFF';
+ if(!enabled){liveEngine?.disable();liveEngine=null;lastEngineEvaluation=null;return}
+ $('analysis-status').textContent='Stockfish 파일 확인 중…';
+ try{
+  // Missing WASM/worker files should produce a helpful error rather than a silent spinner.
+  const js=new URL(ENGINE_SCRIPT,import.meta.url);
+  const wasm=new URL('./engine/stockfish-19-lite-single.wasm',import.meta.url);
+  for(const u of [js,wasm]){
+   const response=await fetch(u,{method:'HEAD',cache:'no-store'});
+   if(!response.ok)throw new Error(`${u.pathname.split('/').at(-1)} 파일 없음 (HTTP ${response.status}). 설치 안내서를 확인하세요.`);
+  }
+  if(!$("analysis-toggle").checked)return;
+  liveEngine=new LiveEngine({workerFactory:()=>new Worker(js),onUpdate:renderAnalysis,onStatus:setAnalysisStatus});
+  liveEngine.setDepth($('analysis-depth').value);
+  liveEngine.enable(game?.chess.fen()||START_FEN);
+ }catch(error){if($('analysis-toggle').checked)setAnalysisStatus(`분석 엔진 오류: ${error.message||error}`,true)}
+}
+
 
 function plyOf(chess){const f=chess.fen().split(' ');return (Number(f[5])-1)*2+(f[1]==='b'?1:0)}
 function priorFens(){const replay=new Chess(game.baseFen),out=[];for(const move of game.chess.history({verbose:true})){out.push(replay.fen());replay.move(move)}return out.slice(-8)}
@@ -171,6 +221,8 @@ async function testToken(){const token=$('lichess-token').value.trim();if(!token
  finally{$('test-token').disabled=false}
 }
 function init(){
+ $('analysis-toggle').addEventListener('change',()=>void toggleAnalysis());
+ $('analysis-depth').addEventListener('change',()=>liveEngine?.setDepth($('analysis-depth').value));
  $('server-indicator').classList.add('online');$('server-indicator').querySelector('span').textContent='브라우저 모드';
  $('elo').addEventListener('input',()=>{$('elo-label').textContent=$('elo').value});
  $('start-mode').addEventListener('change',setStartMode);
