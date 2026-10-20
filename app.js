@@ -1,6 +1,7 @@
 import { Chess } from 'chess.js';
 import {ratingBucket,moveUci, gamesOf, evaluateBook, weightedChoice} from './book.js';
 import {LiveEngine,ENGINE_SCRIPT,formatWhiteScore,whitePerspective,sanVariation} from './engine-analysis.js';
+import {ReviewScorer,moveComparison,signedPawns,uciPosition} from './review-analysis.js';
 
 'use strict';
 const $ = id => document.getElementById(id);
@@ -13,14 +14,14 @@ const MODEL_URL='https://huggingface.co/cemoss17/maia3-onnx/resolve/main/maia3_5
 const WASM_URL='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 let game=null, activeColor='white', busy=false, selected=null, promotionOptions=null;
 let lichessToken='', maia=null, maiaPromise=null, recentBookErrors=0;
-let liveEngine=null, lastEngineEvaluation=null;
+let liveEngine=null, lastEngineEvaluation=null, reviewScorer=null;
 const escapeHtml = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const shortNum = n => Number(n).toLocaleString('ko-KR');
 const currentColor = () => game?.options.color || activeColor;
 const toColor = c => c==='w'?'white':'black';
 function placementMap(fen){const map={};fen.split(' ')[0].split('/').forEach((row,ri)=>{let fi=0;for(const c of row){if(/[1-8]/.test(c)){fi+=Number(c)}else{map['abcdefgh'[fi]+String(8-ri)]=c;fi++}}});return map}
-function isPlaying(){return game && !game.resigned && !game.chess.isGameOver()}
-function isHumanTurn(){return isPlaying() && toColor(game.chess.turn())===game.options.color}
+function isPlaying(){return game && !game.resigned && !game.ended && !game.chess.isGameOver()}
+function isHumanTurn(){return isPlaying() && !game.reviewMode && toColor(game.chess.turn())===game.options.color}
 function playableMoves(){return isHumanTurn()?game.chess.moves({verbose:true}):[]}
 function getSettings(){return {elo:Number($('elo').value),color:activeColor,speed:$('speed').value,minGames:Number($('min-games').value),startMode:$('start-mode').value,startMoves:$('start-moves').value.trim(),startFen:$('start-fen').value.trim()}}
 function setBusy(flag,bot=false){busy=flag;$('board-wait').classList.toggle('hidden',!flag||!bot);$('start-button').disabled=flag;$('top-new').disabled=flag;renderBoard();renderControls()}
@@ -55,8 +56,8 @@ function drawSquares(container,pieces,preview=false,legal=[]){
    const file=files[fi],sq=file+rank,pc=pieces[sq],light=('abcdefgh'.indexOf(file)+rank)%2===0;
    const b=document.createElement(preview?'div':'button');if(!preview)b.type='button';
    b.className=`${preview?'preview-square':'square'} ${light?'light':'dark'}`;
-   if(!preview){b.dataset.square=sq;if(selected===sq)b.classList.add('selected');if(game?.lastMove && [game.lastMove.from,game.lastMove.to].includes(sq))b.classList.add('last-move');
-     if(game?.chess.isCheck() && game.chess.get(sq)?.type==='k' && game.chess.get(sq)?.color===game.chess.turn())b.classList.add('checked');
+   if(!preview){b.dataset.square=sq;if(selected===sq)b.classList.add('selected');if(!game?.reviewMode&&game?.lastMove&&[game.lastMove.from,game.lastMove.to].includes(sq))b.classList.add('last-move');
+     if(viewedChess()?.isCheck() && viewedChess().get(sq)?.type==='k' && viewedChess().get(sq)?.color===viewedChess().turn())b.classList.add('checked');
      if(targets.has(sq))b.classList.add('legal-target');b.addEventListener('click',()=>clickSquare(sq));
      b.setAttribute('aria-label',`${sq} ${pc ? ((pc===pc.toUpperCase())?'백 ':'흑 ')+(NAMES[pc.toLowerCase()]||'기물'):'빈 칸'}`);
    }
@@ -64,20 +65,31 @@ function drawSquares(container,pieces,preview=false,legal=[]){
    if(!preview){if(fi===0){const c=document.createElement('span');c.className='coordinate rank';c.textContent=rank;b.append(c)}if(ri===7){const c=document.createElement('span');c.className='coordinate file';c.textContent=file;b.append(c)}}fragment.append(b)
  }});container.replaceChildren(fragment);
 }
-function renderBoard(){drawSquares($('board'),placementMap(game?.chess.fen()||START_FEN),false,!busy?playableMoves():[])}
+function positionAt(ply){
+ const replay=new Chess(game.baseFen);
+ for(const move of game.chess.history({verbose:true}).slice(0,ply))replay.move(move);
+ return replay;
+}
+function viewedChess(){return game?.reviewMode?positionAt(game.reviewPly):game?.chess}
+function renderBoard(){drawSquares($('board'),placementMap(viewedChess()?.fen()||START_FEN),false,!busy?playableMoves():[])}
 function clickSquare(square){if(busy||!isHumanTurn())return;const moves=playableMoves();if(selected){const possibilities=moves.filter(m=>m.from===selected&&m.to===square);if(possibilities.length===1){selected=null;void humanMove(possibilities[0]);return}if(possibilities.length>1){promotionOptions=possibilities;showPromotion();return}}selected=moves.some(m=>m.from===square)?square:null;renderBoard()}
 function showPromotion(){const popup=$('promotion-modal'),choices=$('promotion-choices');choices.replaceChildren();for(const kind of ['q','r','b','n']){const m=promotionOptions.find(x=>x.promotion===kind);if(!m)continue;const btn=document.createElement('button');btn.type='button';btn.textContent=PIECES[currentColor()==='white'?kind.toUpperCase():kind];btn.setAttribute('aria-label',`${NAMES[kind]}으로 승격`);btn.addEventListener('click',()=>{closePromotion();selected=null;void humanMove(m)});choices.append(btn)}popup.classList.remove('hidden')}
 function closePromotion(){$('promotion-modal').classList.add('hidden');promotionOptions=null}
 function setStartMode(){$('start-moves-area').classList.toggle('hidden',$('start-mode').value!=='moves');$('start-fen-area').classList.toggle('hidden',$('start-mode').value!=='fen');$('position-preview').classList.add('hidden');$('preview-error').classList.add('hidden')}
 function previewPosition(){try{const p=configurePosition(getSettings());drawSquares($('preview-board'),placementMap(p.chess.fen()),true);$('preview-meta').textContent=`다음 차례: ${p.chess.turn()==='w'?'백':'흑'} · ${toColor(p.chess.turn())===activeColor?'내가 먼저':'봇이 먼저'}`;$('preview-fen').textContent=p.chess.fen();$('position-preview').classList.remove('hidden');$('preview-error').classList.add('hidden')}catch(e){$('preview-error').textContent=e.message;$('preview-error').classList.remove('hidden')}}
 
-function renderControls(){if(!game){$('turn-pill').textContent='대국 대기 중';$('move-feedback').textContent='새 대국을 시작하세요';$('undo-button').disabled=true;$('pgn-button').disabled=true;$('resign-button').disabled=true;$('start-position-label').classList.add('hidden');return}
+function renderControls(){if(!game){$('turn-pill').textContent='대국 대기 중';$('move-feedback').textContent='새 대국을 시작하세요';$('undo-button').disabled=true;$('pgn-button').disabled=true;$('resign-button').disabled=true;$('finish-button').disabled=true;$('review-start').disabled=true;$('review-prev').disabled=true;$('review-next').disabled=true;$('start-position-label').classList.add('hidden');return}
  const over=!isPlaying(),me=game.options.color==='black',ch=game.chess;
  $('top-player').textContent=`Humanlike Bot · ${game.options.elo}`;$('top-player-sub').textContent='Lichess + Maia3-5M ONNX';$('bottom-player-sub').textContent=me?'흑으로 플레이':'백으로 플레이';
- $('turn-pill').textContent=over?'대국 종료':ch.turn()==='w'?'백 차례':'흑 차례';
- if(over){$('move-feedback').textContent=game.resigned?'기권했습니다':ch.isCheckmate()?(toColor(ch.turn())===game.options.color?'패배':'승리'):'무승부'} else $('move-feedback').textContent=isHumanTurn()?(ch.isCheck()?'체크 · 내 차례':'내 차례'):'봇 차례';
- $('undo-button').disabled=busy||over||game.chess.history().length<game.setupCount+(game.initialBotTurn?2:1);
+ $('turn-pill').textContent=game.reviewMode?'복기 중':over?'대국 종료':ch.turn()==='w'?'백 차례':'흑 차례';
+ if(game.reviewMode){$('move-feedback').textContent='수순을 선택해 복기할 수 있어요'}else if(over){$('move-feedback').textContent=game.resigned?'기권했습니다':game.ended?'직접 대국 종료':ch.isCheckmate()?(toColor(ch.turn())===game.options.color?'패배':'승리'):'무승부'} else $('move-feedback').textContent=isHumanTurn()?(ch.isCheck()?'체크 · 내 차례':'내 차례'):'봇 차례';
+ $('undo-button').disabled=busy||over||game.reviewMode||game.chess.history().length<game.setupCount+(game.initialBotTurn?2:1);
  $('pgn-button').disabled=busy;$('resign-button').disabled=busy||over;
+ $('finish-button').disabled=busy||over;
+ $('review-start').disabled=busy||!over;
+ $('review-start').textContent=game.reviewMode?'복기 종료':'마치고 분석';
+ $('review-prev').disabled=!game.reviewMode||game.reviewPly<=game.setupCount;
+ $('review-next').disabled=!game.reviewMode||game.reviewPly>=game.chess.history().length;
  $('start-button').innerHTML='새 대국 시작하기 <span aria-hidden="true">→</span>';
  const s=$('start-position-label');if(game.options.startMode!=='standard'){s.classList.remove('hidden');s.textContent=game.options.startMode==='moves'?`시작 수순: ${game.options.startMoves}`:`사용자 지정 FEN · ${game.baseFen}`}else s.classList.add('hidden');
 }
@@ -88,28 +100,99 @@ function renderStats(){const el=$('stats-content'),tag=$('source-tag'),report=ga
  tag.textContent='LICHESS DATA';const selected=report.selected;
  el.innerHTML=`<div class="insight-heading"><div><small>봇이 선택한 수</small><strong>${escapeHtml(selected.san)}</strong></div><span class="insight-percent">${selected.percent.toFixed(1)}%</span></div><p class="insight-desc">실제 ${shortNum(selected.count)} / ${shortNum(report.total)}판에서 선택</p>${insightRow(selected,true)}<div class="alternative-title">다른 주요 후보</div>${report.alternatives.map(x=>insightRow(x)).join('')||'<p class="insight-desc">다른 주요 후보 없음</p>'}<div class="insight-footer">${escapeHtml(SPEED_LABELS[report.speed])} · 레이팅 ${report.bucket} 구간 · 전체 ${shortNum(report.total)}판<br/>조회 후보 포함 비율 ${(100*report.represented/report.total).toFixed(1)}%<br/>선택 확률이며 엔진 정확도·승률이 아닙니다.</div>`;
 }
-function renderHistory(){const list=$('move-list');if(!game){list.innerHTML='<p class="empty-moves">아직 진행한 수가 없습니다.</p>';$('move-count').textContent='0수';return}
- const moves=game.chess.history({verbose:true});$('move-count').textContent=`${Math.max(0,moves.length-game.setupCount)}반수 진행`;
- const start=new Chess(game.baseFen);let number=start.moveNumber(),turn=start.turn();
- // Derive actual SAN number from FEN; preserve setup moves for moves-based starts.
- let i=0,html=[];while(i<moves.length){const m=moves[i],n=number;let white='',black='';if(turn==='w'){white=m.san;i++;turn='b';if(i<moves.length){black=moves[i].san;i++;turn='w';number++}}else{black=m.san;i++;turn='w';number++}
- const flags=(first,last)=>`<span class="move-san ${first?'setup-move':''} ${last?'latest':''}">${escapeHtml(first&&first.san?first.san:last)}</span>`;
- const firstIndex=i-(white&&black?2:1);let row=`<div class="move-row"><span class="move-number">${n}${white?'.':'...'}</span>`;
- row+=white?`<span class="move-san ${firstIndex<game.setupCount?'setup-move':''}">${escapeHtml(white)}</span>`:'<span class="move-san">—</span>';
- row+=black?`<span class="move-san ${(i-1)<game.setupCount?'setup-move':''}">${escapeHtml(black)}</span>`:'<span class="move-san">—</span>';
- html.push(row+'</div>'); }
- list.innerHTML=html.join('')||'<p class="empty-moves">아직 진행한 수가 없습니다.</p>';list.scrollTop=list.scrollHeight;
+// A replay from the original FEN preserves move numbering and setup-move boundaries.
+function getMoveFrames(){
+ if(!game)return [];
+ const replay=new Chess(game.baseFen),frames=[];
+ for(const [i,move] of game.chess.history({verbose:true}).entries()){
+  const beforeFen=replay.fen(),turn=replay.turn(),number=replay.moveNumber();
+  replay.move(move);
+  frames.push({index:i+1,number,turn,san:move.san,beforeFen,afterFen:replay.fen(),setup:i<game.setupCount});
+ }
+ return frames;
 }
-function render(){renderBoard();renderControls();renderStats();renderHistory();refreshAnalysis()}
+function comparisonFor(frame){
+ if(!reviewScorer||frame.setup)return null;
+ const before=reviewScorer.results.get(frame.beforeFen);
+ const after=reviewScorer.results.get(frame.afterFen);
+ const bestPosition=uciPosition(Chess,frame.beforeFen,before?.bestUci);
+ const bestAfter=bestPosition?reviewScorer.results.get(bestPosition.fen):null;
+ return moveComparison(before,after,bestAfter,frame.turn);
+}
+function scheduleReviewPositions(){
+ if(!game||!reviewScorer?.worker||!$('analysis-toggle').checked)return;
+ const frames=getMoveFrames().filter(x=>!x.setup);
+ for(const frame of frames){
+  reviewScorer.enqueue(frame.beforeFen);
+  reviewScorer.enqueue(frame.afterFen);
+  const bestUci=reviewScorer.results.get(frame.beforeFen)?.bestUci;
+  const best=uciPosition(Chess,frame.beforeFen,bestUci);
+  if(best)reviewScorer.enqueue(best.fen);
+ }
+}
+function historyMove(frame){
+ const comparison=comparisonFor(frame);
+ const selected=game.reviewMode&&game.reviewPly===frame.index;
+ let annotation=frame.setup?'<span class="move-metrics setup-metrics">시작 수순</span>':'';
+ if(!frame.setup && ($('analysis-toggle').checked || comparison)){
+  annotation=comparison?.mate?'<span class="move-metrics">메이트 상황 · 변화량 —</span>':comparison?
+   `<span class="move-metrics">실제 Δ <b>${signedPawns(comparison.actual)}</b> · 최선 Δ <b>${signedPawns(comparison.best)}</b></span>`:
+   '<span class="move-metrics waiting-eval">⏳ 계산 중…</span>';
+ }
+ const classes=`record-move ${frame.setup?'setup-move':''} ${selected?'review-selected':''}`;
+ return `<button type="button" data-ply="${frame.index}" class="${classes}" ${game.reviewMode?'':'disabled'}><span class="move-san">${escapeHtml(frame.san)}</span>${annotation}</button>`;
+}
+function renderHistory(){
+ const list=$('move-list');if(!game){list.innerHTML='<p class="empty-moves">아직 진행한 수가 없습니다.</p>';$('move-count').textContent='0수';return}
+ const frames=getMoveFrames();$('move-count').textContent=`${Math.max(0,frames.length-game.setupCount)}반수 진행`;
+ let rows=[],i=0;
+ while(i<frames.length){
+  const first=frames[i];const number=first.number;
+  const white=first.turn==='w'?frames[i++]:null;
+  const black=i<frames.length&&frames[i].turn==='b'&&frames[i].number===number?frames[i++]:null;
+  rows.push(`<div class="move-row"><span class="move-number">${number}.</span>${white?historyMove(white):'<span class="record-placeholder">—</span>'}${black?historyMove(black):'<span class="record-placeholder">—</span>'}</div>`);
+ }
+ const oldScroll=list.scrollTop,nearBottom=list.scrollHeight-list.clientHeight-list.scrollTop<70;
+ list.innerHTML=rows.join('')||'<p class="empty-moves">아직 진행한 수가 없습니다.</p>';
+ for(const btn of list.querySelectorAll('button[data-ply]'))btn.addEventListener('click',()=>{
+  if(!game.reviewMode)return;game.reviewPly=Number(btn.dataset.ply);render();
+ });
+ list.scrollTop=game.reviewMode?oldScroll:(nearBottom?list.scrollHeight:oldScroll);
+ const done=frames.filter(x=>!x.setup&&comparisonFor(x)).length;
+ if($('analysis-toggle').checked&&reviewScorer?.worker){
+  const total=frames.filter(x=>!x.setup).length;
+  $('review-status').textContent=`기보 평가 ${done}/${total}수 완료 · 깊이 ${reviewScorer.depth} · 최선 수의 가상 착수도 별도 평가`;
+ }
+}
+function showReview(ply){
+ if(!game||busy||isPlaying())return;
+ game.reviewMode=true;game.reviewPly=Math.max(game.setupCount,Math.min(game.chess.history().length,ply));
+ selected=null;render();
+}
+function finishGame(){
+ if(!game||busy||!isPlaying())return;
+ if(!confirm('현재 대국을 여기서 마칠까요? 경기 결과는 미완료(*)로 저장됩니다.'))return;
+ game.ended=true;render();
+}
+function render(){renderBoard();renderControls();renderStats();renderHistory();refreshAnalysis();scheduleReviewPositions()}
 
 function renderAnalysis(data){
  lastEngineEvaluation=data;
- const area=$('analysis-content');
+ const area=$('analysis-content');const banner=$('board-eval');
+ banner.classList.toggle('hidden',!$('analysis-toggle').checked);
+ $('board-eval-value').textContent='계산 중…';
+ $('board-eval-best').textContent='최선 —';$('board-eval-second').textContent='차선 —';
+ $('board-eval-depth').textContent='분석 중';
  if(!$('analysis-toggle').checked)return;
  if(!data||!data.lines.length){area.innerHTML='<p class="engine-empty">현재 포지션을 분석 중입니다…</p>';return}
  // Stockfish info scores are reported from the SIDE TO MOVE; always display White's POV.
  const top=data.lines.find(x=>x.rank===1);
  if(!top){area.innerHTML='<p class="engine-empty">최선 수 분석 중…</p>';return}
+ $('board-eval-value').textContent=formatWhiteScore(top,data.fen);
+ $('board-eval-best').textContent='최선 '+(sanVariation(Chess,data.fen,top.pv,1)[0]||top.pv[0]||'—');
+ const second=data.lines.find(x=>x.rank===2);
+ $('board-eval-second').textContent='차선 '+(second?(sanVariation(Chess,data.fen,second.pv,1)[0]||second.pv[0]||'—'):'계산 중…');
+ $('board-eval-depth').textContent='깊이 '+data.depth;
  const value=whitePerspective(top,data.fen);
  const side=top.type==='mate'?(value>=0?'백 메이트 유리':'흑 메이트 유리'):(Math.abs(value)<25?'거의 균형':value>0?'백 우세':'흑 우세');
  const header=`<div class="engine-score"><div><small>현재 엔진 평가 · 백 기준</small><strong>${escapeHtml(formatWhiteScore(top,data.fen))}</strong></div><span class="engine-score-side">${side}<br><span class="engine-depth">분석 깊이 ${data.depth}</span></span></div>`;
@@ -124,7 +207,7 @@ function renderAnalysis(data){
 function setAnalysisStatus(message,error=false){const el=$('analysis-status');el.textContent=message;el.classList.toggle('error',error);$('analysis-tag').textContent=error?'ERROR':'ON'}
 function refreshAnalysis(){
  if(!$('analysis-toggle').checked||!liveEngine?.worker)return;
- const fen=game?.chess.fen()||START_FEN;
+ const fen=viewedChess()?.fen()||START_FEN;
  liveEngine.analyze(fen);
 }
 async function toggleAnalysis(){
@@ -132,7 +215,9 @@ async function toggleAnalysis(){
  $('analysis-advanced').classList.toggle('hidden',!enabled);
  $('analysis-off-desc').classList.toggle('hidden',enabled);
  $('analysis-tag').textContent=enabled?'ON':'OFF';
- if(!enabled){liveEngine?.disable();liveEngine=null;lastEngineEvaluation=null;return}
+ if(!enabled){liveEngine?.disable();liveEngine=null;reviewScorer?.stop();lastEngineEvaluation=null;
+  $('board-eval').classList.add('hidden');$('review-status').textContent='엔진 분석을 켜면 착수별 평가를 기록합니다.';
+  renderHistory();return;}
  $('analysis-status').textContent='Stockfish 파일 확인 중…';
  try{
   // Missing WASM/worker files should produce a helpful error rather than a silent spinner.
@@ -145,7 +230,13 @@ async function toggleAnalysis(){
   if(!$("analysis-toggle").checked)return;
   liveEngine=new LiveEngine({workerFactory:()=>new Worker(js),onUpdate:renderAnalysis,onStatus:setAnalysisStatus});
   liveEngine.setDepth($('analysis-depth').value);
-  liveEngine.enable(game?.chess.fen()||START_FEN);
+  liveEngine.enable(viewedChess()?.fen()||START_FEN);
+  const savedScores=reviewScorer?.results;
+  reviewScorer=new ReviewScorer({workerFactory:()=>new Worker(js),onStatus:(msg,error)=>{
+    $('review-status').textContent=msg;if(error)showError(msg);
+  },onResult:()=>{renderHistory();scheduleReviewPositions();}});
+  if(savedScores)reviewScorer.results=new Map(savedScores);
+  reviewScorer.start(10);scheduleReviewPositions();renderHistory();
  }catch(error){if($('analysis-toggle').checked)setAnalysisStatus(`분석 엔진 오류: ${error.message||error}`,true)}
 }
 
@@ -203,14 +294,38 @@ async function humanMove(move){if(busy||!isHumanTurn())return;
  catch(e){showError('이동할 수 없습니다: '+e.message)}
 }
 async function startGame(){if(busy)return;clearError();
- try{const opts=getSettings(),s=configurePosition(opts);game={...s,options:opts,lastBot:null,lastMove:null,resigned:false,initialBotTurn:toColor(s.chess.turn())!==opts.color};recentBookErrors=0;selected=null;$('retry-bot').classList.add('hidden');render();if(isPlaying()&&!isHumanTurn())await botTurn()}
+ try{const opts=getSettings(),s=configurePosition(opts);game={...s,options:opts,lastBot:null,lastMove:null,resigned:false,ended:false,reviewMode:false,reviewPly:0,initialBotTurn:toColor(s.chess.turn())!==opts.color};recentBookErrors=0;selected=null;if(reviewScorer)reviewScorer.reset(10);$('retry-bot').classList.add('hidden');render();if(isPlaying()&&!isHumanTurn())await botTurn()}
  catch(e){showError(e.message)}
 }
 function undo(){if(busy||!game||game.chess.history().length<game.setupCount+(game.initialBotTurn?2:1))return;
  game.chess.undo();if(!isHumanTurn()&&game.chess.history().length>game.setupCount)game.chess.undo();
  game.lastBot=null;game.lastMove=null;selected=null;$('retry-bot').classList.add('hidden');clearError();render();if(!isHumanTurn()&&isPlaying())void botTurn()}
-function exportPgn(){if(!game)return;const ch=game.chess;ch.setHeader('Event','Humanlike Browser Chess');ch.setHeader('White',game.options.color==='white'?'Human':'Maia/Lichess');ch.setHeader('Black',game.options.color==='black'?'Human':'Maia/Lichess');ch.setHeader('Result',game.resigned?(game.options.color==='white'?'0-1':'1-0'):ch.isGameOver()?(ch.isCheckmate()?(ch.turn()==='w'?'0-1':'1-0'):'1/2-1/2'):'*');
- const blob=new Blob([ch.pgn()],{type:'application/x-chess-pgn;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='humanlike-chess.pgn';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500)}
+function exportPgn(){
+ if(!game)return;
+ // Rebuild the game so comments are saved as standard PGN annotations.
+ const ch=new Chess(game.baseFen),frames=getMoveFrames();
+ ch.setHeader('Event','Humanlike Browser Chess');
+ ch.setHeader('White',game.options.color==='white'?'Human':'Maia/Lichess');
+ ch.setHeader('Black',game.options.color==='black'?'Human':'Maia/Lichess');
+ ch.setHeader('Result',game.resigned?(game.options.color==='white'?'0-1':'1-0'):
+   ch.isGameOver()?(ch.isCheckmate()?(ch.turn()==='w'?'0-1':'1-0'):'1/2-1/2'):'*');
+ for(const frame of frames){
+  ch.move(frame.san);
+  const comparison=comparisonFor(frame);
+  if(comparison&&!comparison.mate&&typeof ch.setComment==='function'){
+   const best=uciPosition(Chess,frame.beforeFen,reviewScorer?.results.get(frame.beforeFen)?.bestUci);
+   const score=reviewScorer?.results.get(frame.afterFen);
+   const text=`Stockfish depth ${reviewScorer.depth}; 실제 변화 ${signedPawns(comparison.actual)}; 최선 ${best?.san||'?'} 변화 ${signedPawns(comparison.best)}; 착수후 백 평가 ${signedPawns(score?.white)}`;
+   ch.setComment(text);
+  }
+ }
+ // Determine the result from the ORIGINAL game, not the replay during export.
+ const actual=game.chess;
+ ch.setHeader('Result',game.resigned?(game.options.color==='white'?'0-1':'1-0'):
+   actual.isGameOver()?(actual.isCheckmate()?(actual.turn()==='w'?'0-1':'1-0'):'1/2-1/2'):'*');
+ const blob=new Blob([ch.pgn()],{type:'application/x-chess-pgn;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=url;a.download='humanlike-chess-annotated.pgn';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
 async function testToken(){const token=$('lichess-token').value.trim();if(!token){$('token-status').textContent='먼저 토큰을 입력해 주세요.';return}
  $('test-token').disabled=true;$('token-status').textContent='Lichess API 연결 중…';
  const params=new URLSearchParams({variant:'standard',play:'d2d4',ratings:'1400',speeds:'blitz',moves:'8',topGames:'0',recentGames:'0'});
@@ -222,7 +337,10 @@ async function testToken(){const token=$('lichess-token').value.trim();if(!token
 }
 function init(){
  $('analysis-toggle').addEventListener('change',()=>void toggleAnalysis());
- $('analysis-depth').addEventListener('change',()=>liveEngine?.setDepth($('analysis-depth').value));
+ $('analysis-depth').addEventListener('change',()=>{
+  liveEngine?.setDepth($('analysis-depth').value);
+  // History is always scored at fixed depth 10 for mobile performance.
+ });
  $('server-indicator').classList.add('online');$('server-indicator').querySelector('span').textContent='브라우저 모드';
  $('elo').addEventListener('input',()=>{$('elo-label').textContent=$('elo').value});
  $('start-mode').addEventListener('change',setStartMode);
@@ -233,6 +351,15 @@ function init(){
  for(const b of document.querySelectorAll('[data-color]'))b.addEventListener('click',()=>{activeColor=b.dataset.color;document.querySelectorAll('[data-color]').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b))});if(!game)renderBoard()});
  $('start-button').addEventListener('click',()=>void startGame());$('top-new').addEventListener('click',()=>void startGame());
  $('undo-button').addEventListener('click',undo);$('pgn-button').addEventListener('click',exportPgn);
+ $('finish-button').addEventListener('click',finishGame);
+ $('review-start').addEventListener('click',()=>{
+  if(!game||isPlaying())return;
+  if(game.reviewMode){game.reviewMode=false;render();return;}
+  showReview(game.setupCount);
+  if(!$('analysis-toggle').checked){$('analysis-toggle').checked=true;void toggleAnalysis();}
+ });
+ $('review-prev').addEventListener('click',()=>showReview((game?.reviewPly||0)-1));
+ $('review-next').addEventListener('click',()=>showReview((game?.reviewPly||0)+1));
  $('resign-button').addEventListener('click',()=>{if(game&&!busy&&isPlaying()&&confirm('정말 기권하시겠습니까?')){game.resigned=true;render()}});
  $('retry-bot').addEventListener('click',()=>{if(!busy){$('retry-bot').classList.add('hidden');void botTurn()}});
  $('promotion-cancel').addEventListener('click',()=>{closePromotion();renderBoard()});document.addEventListener('keydown',e=>{if(e.key==='Escape'&&promotionOptions){closePromotion();renderBoard()}});

@@ -57,3 +57,51 @@
 .engine-pv{font-size:11px;color:#b0c6c9;margin:5px 0 0;line-height:1.6;overflow-wrap:anywhere}
 .engine-depth{font-size:10px;color:#84a1a8}
 @media(max-width:610px){.analysis-panel{order:0}}
+
+/* v0.4: board-adjacent Stockfish summary and annotated move history */
+.board-eval{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  position:sticky;top:4px;z-index:25;margin:0 0 9px;
+  border:1px solid #5f8b7c;border-radius:12px;padding:10px 13px;
+  background:#17312ef2;box-shadow:0 7px 20px #040c1180;
+  backdrop-filter:blur(10px);
+}
+.board-eval small{display:block;font-size:9px;color:#a0caba;letter-spacing:.6px}
+.board-eval strong{display:block;font-size:23px;color:#d4fce6;font-variant-numeric:tabular-nums;line-height:1.25;white-space:nowrap}
+.board-eval-moves{display:flex;flex-direction:column;gap:2px;min-width:0;text-align:left;font-size:11px;font-weight:700;color:#d7e8e1}
+.board-eval-moves span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.board-eval-depth{font-size:10px;color:#b4c7c4;flex-shrink:0;white-space:nowrap}
+.play-history-panel{margin-top:16px;padding:16px 17px}
+.play-history-panel .panel-header{margin-bottom:8px}
+.history-note{font-size:11px;color:#9eb7b6;line-height:1.6;margin:0 0 12px}
+.history-note b{color:#d9eee7}
+.play-history-panel .move-list{max-height:315px;overflow:auto;scrollbar-color:#476359 transparent}
+.play-history-panel .move-row{display:grid;grid-template-columns:35px minmax(0,1fr) minmax(0,1fr);gap:6px;align-items:stretch;padding:4px 3px}
+.play-history-panel .move-number{padding:9px 0 0 2px}
+.record-move{display:flex;flex-direction:column;gap:2px;align-items:flex-start;justify-content:flex-start;min-width:0;
+  text-align:left;color:#f0f5f4;border:1px solid #3b5053;border-radius:7px;background:#1d3138;padding:7px 8px;min-height:52px}
+.record-move:disabled{opacity:1;cursor:default}
+.record-move:not(:disabled):hover{border-color:#6c9987}
+.record-move.review-selected{border-color:#a5e3c9;background:#2b5347}
+.record-move .move-san{font-size:14px;line-height:1.15}
+.record-move.setup-move .move-san{color:#91a6aa}
+.move-metrics{font-size:10px;color:#bed4d4;line-height:1.6;overflow-wrap:anywhere}
+.move-metrics b{font-variant-numeric:tabular-nums;color:#c2efdd;white-space:nowrap}
+.move-metrics.waiting-eval{color:#d7c28b}
+.move-metrics.setup-metrics{color:#839a9f}
+.record-placeholder{color:#61777f;padding:8px}
+.review-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:13px}
+.review-actions .button{padding:8px 10px;font-size:11px}
+.review-actions .button:first-child{border-color:#658f83;color:#d4f9e5}
+.review-status{font-size:10px;color:#a6c2bb;margin:10px 0 0;line-height:1.65}
+@media (max-width:610px){
+ .board-eval{top:0;border-radius:9px;padding:9px 10px;gap:6px}
+ .board-eval strong{font-size:20px}
+ .board-eval-moves{font-size:10px}
+ .board-eval-depth{font-size:9px}
+ .play-history-panel{padding:14px 11px}
+ .play-history-panel .move-list{max-height:260px}
+ .record-move{padding:7px 5px}
+ .move-metrics{font-size:9px}
+ .toolbar-actions{flex-wrap:wrap;gap:10px}
+}

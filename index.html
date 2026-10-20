@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#101820" />
   <meta name="description" content="Lichess 실제 오프닝 수 선택 통계와 Maia-3의 인간형 착수 모델로 대국하는 체스 웹앱" />
   <title>Humanlike Chess — 사람처럼 두는 체스</title>
-  <link rel="stylesheet" href="./style.css?v=engine-1" />
+  <link rel="stylesheet" href="./style.css?v=review-1" />
   <meta name="referrer" content="no-referrer" />
   <script type="importmap">
   {"imports": {
@@ -15,7 +15,7 @@
     "onnxruntime-web": "https://esm.sh/onnxruntime-web@1.22.0"
   }}
   </script>
-  <script type="module" src="./app.js?v=engine-1"></script>
+  <script type="module" src="./app.js?v=review-1"></script>
 </head>
 <body>
   <div class="shell">
@@ -33,6 +33,11 @@
       <section class="play-column" aria-label="체스 대국">
         <div class="player-strip upper-strip"><div class="player-avatar bot-avatar" aria-hidden="true">♞</div><div class="player-info"><strong id="top-player">Humanlike Bot</strong><small id="top-player-sub">Lichess + Maia-3</small></div><div class="turn-pill" id="turn-pill">대국 대기 중</div></div>
 
+        <div id="board-eval" class="board-eval hidden" aria-live="polite">
+          <div><small>STOCKFISH · 백 기준</small><strong id="board-eval-value">계산 중…</strong></div>
+          <div class="board-eval-moves"><span id="board-eval-best">최선 —</span><span id="board-eval-second">차선 —</span></div>
+          <span id="board-eval-depth" class="board-eval-depth">분석 중</span>
+        </div>
         <div class="board-wrap" id="board-wrap">
           <div id="board" class="board" role="group" aria-label="체스판"></div>
           <div class="board-wait hidden" id="board-wait" role="status"><span class="wait-loader"></span><strong>봇이 수를 고르는 중...</strong><small>Lichess 통계 · Maia-3</small></div>
@@ -41,7 +46,14 @@
         <div class="player-strip lower-strip"><div class="player-avatar human-avatar" aria-hidden="true">◎</div><div class="player-info"><strong>나 <span class="you-label">YOU</span></strong><small id="bottom-player-sub">백으로 플레이</small></div><span id="move-feedback" class="feedback">새 대국을 시작하세요</span></div>
 
         <div id="start-position-label" class="position-start-label hidden"></div>
-        <div class="board-toolbar"><div class="toolbar-help"><span class="help-dot"></span> 기물을 누르고 이동할 칸을 선택하세요</div><div class="toolbar-actions"><button id="undo-button" class="text-button" type="button" disabled>↶ 되돌리기</button><button id="pgn-button" class="text-button" type="button" disabled>↓ PGN 저장</button><button id="resign-button" class="text-button danger-button" type="button" disabled>기권</button></div></div>
+        <div class="board-toolbar"><div class="toolbar-help"><span class="help-dot"></span> 기물을 누르고 이동할 칸을 선택하세요</div><div class="toolbar-actions"><button id="undo-button" class="text-button" type="button" disabled>↶ 되돌리기</button><button id="pgn-button" class="text-button" type="button" disabled>↓ PGN 저장</button><button id="resign-button" class="text-button danger-button" type="button" disabled>기권</button><button id="finish-button" class="text-button" type="button" disabled>경기 마침</button></div></div>
+        <section class="panel history-panel play-history-panel" aria-label="대국 기보와 평가 변화">
+          <div class="panel-header"><div><span class="section-number">GAME RECORD / REVIEW</span><h2>대국 기보 · 평가 변화</h2></div><span id="move-count" class="move-counter">0수</span></div>
+          <p class="history-note">각 수는 <b>실제 Δ</b>와 <b>최선 Δ</b>를 착수한 쪽 관점에서 비교합니다. 동일 깊이에서 계산하며, 기다리는 동안 ⏳가 표시됩니다.</p>
+          <div id="move-list" class="move-list"><p class="empty-moves">아직 진행한 수가 없습니다.</p></div>
+          <div class="review-actions"><button id="review-start" type="button" class="button button-outline" disabled>마치고 분석</button><button id="review-prev" type="button" class="button button-outline" disabled>← 이전 수</button><button id="review-next" type="button" class="button button-outline" disabled>다음 수 →</button></div>
+          <p id="review-status" class="review-status">엔진 분석을 켜면 착수별 평가를 기록합니다.</p>
+        </section>
         <div id="alert" class="alert hidden" role="alert"></div><button type="button" id="retry-bot" class="button button-outline hidden" style="margin-top:10px;width:100%">봇 착수 다시 시도</button>
       </section>
 
@@ -97,7 +109,7 @@
             <div class="analysis-setting"><label for="analysis-depth">분석 깊이</label><select id="analysis-depth"><option value="10">빠르게 · 깊이 10</option><option value="14" selected>표준 · 깊이 14</option><option value="18">정밀 · 깊이 18</option></select></div>
             <p id="analysis-status" class="engine-status" aria-live="polite">분석을 준비 중입니다.</p>
             <div id="analysis-content" class="analysis-content" aria-live="off"><p class="engine-empty">현재 포지션을 계산 중…</p></div>
-            <p class="engine-disclaimer">백 기준 평가: +는 백 우세, −는 흑 우세. Stockfish는 <strong>힌트와 평가에만</strong> 사용되며 봇의 착수는 Lichess/Maia-3가 결정합니다.</p>
+            <p class="engine-disclaimer">위쪽 숫자는 백 기준 평가이며, 기보의 변화량은 착수한 쪽 기준입니다. 기보는 일정한 깊이에서 별도로 순차 분석하므로 평가가 약간 다를 수 있습니다. 백 기준 평가: +는 백 우세, −는 흑 우세. Stockfish는 <strong>힌트와 평가에만</strong> 사용되며 봇의 착수는 Lichess/Maia-3가 결정합니다.</p>
           </div>
           <p id="analysis-off-desc" class="engine-off-note">켜면 Stockfish가 현재 포지션의 최선·차선 수를 분석합니다. 꺼두면 분석 계산을 하지 않습니다.</p>
         </section>
@@ -107,7 +119,7 @@
           <div id="stats-content" class="stats-content"><div class="empty-insight"><div class="empty-icon">◈</div><strong>착수 데이터가 여기에 표시돼요</strong><p>봇이 수를 두면 실제 선택 빈도와 다른 주요 후보를 확인할 수 있습니다.</p></div></div>
         </section>
 
-        <section class="panel history-panel"><div class="panel-header"><div><span class="section-number">04 / GAME RECORD</span><h2>대국 기보</h2></div><span id="move-count" class="move-counter">0수</span></div><div id="move-list" class="move-list"><p class="empty-moves">아직 진행한 수가 없습니다.</p></div></section>
+
       </aside>
     </main>
 
