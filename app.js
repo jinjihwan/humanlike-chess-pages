@@ -1,5 +1,5 @@
 import { Chess } from 'chess.js';
-import {ratingBucket,moveUci, gamesOf, evaluateBook, weightedChoice} from './book.js';
+import {ratingBucket,moveUci,normalizeExplorerUci,explorerMoveUci, gamesOf, evaluateBook, weightedChoice} from './book.js';
 import {LiveEngine,ENGINE_SCRIPT,formatWhiteScore,whitePerspective,sanVariation} from './engine-analysis.js';
 import {ReviewScorer,moveComparison,signedPawns,uciPosition} from './review-analysis.js';
 
@@ -247,17 +247,31 @@ function bookReason(ch){if(plyOf(ch)>=BOOK_LIMIT)return `오프닝 제한 ${BOOK
 async function getBookChoice(){
  const ch=game.chess,why=bookReason(ch);if(why)return {reason:why};
  const params=new URLSearchParams({variant:'standard',ratings:String(ratingBucket(game.options.elo)),speeds:game.options.speed,moves:'16',topGames:'0',recentGames:'0'});
- if(game.options.startMode==='fen')params.set('fen',ch.fen());else params.set('play',ch.history({verbose:true}).map(moveUci).join(','));
+ if(game.options.startMode==='fen')params.set('fen',ch.fen());else params.set('play',ch.history({verbose:true}).map(explorerMoveUci).join(','));
  const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),22000);
- try{
+ const fetchBook=async count=>{
+  params.set('moves',String(count));
   const resp=await fetch(`https://explorer.lichess.org/lichess?${params}`,{headers:{Authorization:`Bearer ${lichessToken}`,Accept:'application/json'},mode:'cors',credentials:'omit',cache:'no-store',signal:controller.signal});
   if(!resp.ok)throw new Error(`Lichess HTTP ${resp.status}`);
-  const data=await resp.json(),legal=ch.moves({verbose:true}),valid=evaluateBook(data,legal.map(moveUci),game.options.minGames,0.9);
+  return resp.json();
+ };
+ try{
+  const legal=ch.moves({verbose:true});
+  let data=await fetchBook(16),valid=evaluateBook(data,legal.map(moveUci),game.options.minGames,0.9);
+  // 16개로 후보 분포가 충분히 설명되지 않으면 더 많은 후보를 받아 재검사한다.
+  // 이때 실제 수 선택 비율은 여전히 전체 대국 수를 분모로 사용한다.
+  if(!valid.ok && valid.total>=game.options.minGames && valid.represented/valid.total<0.9){
+   try{
+    const expanded=await fetchBook(99);
+    const retest=evaluateBook(expanded,legal.map(moveUci),game.options.minGames,0.9);
+    data=expanded;valid=retest;
+   }catch(err){valid.reason+=` 추가 후보 조회 실패: ${err.message||err}.`}
+  }
   recentBookErrors=0;
   if(!valid.ok)return {reason:valid.reason};
-  const choice=weightedChoice(valid.rows),picked=legal.find(m=>moveUci(m)===choice.uci);
+  const choice=weightedChoice(valid.rows),picked=legal.find(m=>moveUci(m)===choice.matchedUci);
   const percent=e=>100*e.count/valid.total;
-  const report={source:'lichess',selected:{san:picked.san,percent:percent(choice),count:choice.count},alternatives:valid.rows.filter(x=>x.uci!==choice.uci).slice(0,3).map(x=>({san:x.san,percent:percent(x),count:x.count})),total:valid.total,represented:valid.represented,bucket:ratingBucket(game.options.elo),speed:game.options.speed};
+  const report={source:'lichess',selected:{san:picked.san,percent:percent(choice),count:choice.count},alternatives:valid.rows.filter(x=>x.matchedUci!==choice.matchedUci).slice(0,3).map(x=>({san:x.san,percent:percent(x),count:x.count})),total:valid.total,represented:valid.represented,bucket:ratingBucket(game.options.elo),speed:game.options.speed};
   return {move:picked,report};
  }catch(error){recentBookErrors++;return {reason:`통계 API ${error?.name==='AbortError'?'시간 초과':(error?.message||'연결 오류')}`}}
  finally{clearTimeout(timer)}
@@ -277,7 +291,7 @@ async function prepareMaia(){
  try{return await maiaPromise}catch(e){maiaPromise=null;$('model-status').textContent=`모델 로딩 실패: ${e.message||e}`;throw new Error(`Maia-3 초기화 실패: ${e.message||e}. 네트워크 또는 브라우저 호환성을 확인하세요.`)}
 }
 async function getMaiaMove(){const m=await prepareMaia();const legal=game.chess.moves({verbose:true}),result=await m.predict({fen:game.chess.fen(),priorFens:priorFens(),selfElo:game.options.elo,oppoElo:game.options.elo,temperature:1,topP:1,topK:5});
- const uci=result.bestMove;const pick=legal.find(x=>moveUci(x)===uci);
+ const uci=result.bestMove;const pick=legal.find(x=>moveUci(x)===normalizeExplorerUci(uci));
  if(!pick)throw new Error(`Maia-3가 현재 포지션에 합법적이지 않은 수를 반환했습니다 (${uci||'없음'}).`);
  return pick}
 async function botTurn(){if(!game||!isPlaying()||isHumanTurn())return;
