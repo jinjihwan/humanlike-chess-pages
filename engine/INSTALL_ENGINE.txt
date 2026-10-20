@@ -1,0 +1,10 @@
+Stockfish 19 Lite Single-thread (GPL-3.0)
+Run download_stockfish.ps1 on Windows to download:
+  stockfish-19-lite-single.js
+  stockfish-19-lite-single.wasm
+from https://cdn.jsdelivr.net/npm/stockfish@19.0.1/bin/
+
+Both files must be in this engine directory and uploaded to GitHub Pages.
+Stockfish.js upstream source and license: https://github.com/nmrugg/stockfish.js
+
+This folder intentionally does NOT include the 2 binary files. Download via the provided script.
