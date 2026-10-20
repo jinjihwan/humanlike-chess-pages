@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#101820" />
   <meta name="description" content="Lichess 실제 오프닝 수 선택 통계와 Maia-3의 인간형 착수 모델로 대국하는 체스 웹앱" />
   <title>Humanlike Chess — 사람처럼 두는 체스</title>
-  <link rel="stylesheet" href="./style.css?v=review-1" />
+  <link rel="stylesheet" href="./style.css?v=book-win-1" />
   <meta name="referrer" content="no-referrer" />
   <script type="importmap">
   {"imports": {
@@ -15,7 +15,7 @@
     "onnxruntime-web": "https://esm.sh/onnxruntime-web@1.22.0"
   }}
   </script>
-  <script type="module" src="./app.js?v=review-1"></script>
+  <script type="module" src="./app.js?v=book-win-1"></script>
 </head>
 <body>
   <div class="shell">
@@ -38,8 +38,14 @@
           <div class="board-eval-moves"><span id="board-eval-best">최선 —</span><span id="board-eval-second">차선 —</span></div>
           <span id="board-eval-depth" class="board-eval-depth">분석 중</span>
         </div>
+        <div id="book-ribbon" class="book-ribbon hidden" aria-live="polite">
+          <div class="book-ribbon-header"><span id="book-ribbon-summary">LICHESS · 후보 데이터</span><button type="button" id="book-candidates-toggle" class="button button-outline book-toggle" aria-pressed="false" aria-controls="book-arrow-layer">후보 화살표</button></div>
+          <div id="book-ribbon-choices" class="book-ribbon-choices hidden" aria-label="Lichess 후보 수와 선택 비율"></div>
+          <p class="book-ribbon-note hidden" id="book-ribbon-note">봇이 착수하기 <b>직전 포지션</b>을 보여줍니다. 1번(초록색)은 봇이 실제 선택한 수, 2~4번(파란색)은 다른 인기 후보입니다. 숫자는 각 수의 선택 비율입니다. 다시 누르면 현재 대국으로 돌아갑니다.</p>
+        </div>
         <div class="board-wrap" id="board-wrap">
           <div id="board" class="board" role="group" aria-label="체스판"></div>
+          <svg id="book-arrow-layer" class="book-arrow-layer" viewBox="0 0 800 800" aria-hidden="true" preserveAspectRatio="xMidYMid meet"></svg>
           <div class="board-wait hidden" id="board-wait" role="status"><span class="wait-loader"></span><strong>봇이 수를 고르는 중...</strong><small>Lichess 통계 · Maia-3</small></div>
         </div>
 
@@ -116,7 +122,7 @@
 
         <section class="panel stats-panel">
           <div class="panel-header"><div><span class="section-number">03 / MOVE INSIGHTS</span><h2>봇의 수 선택 분석</h2></div><span class="info-tag" id="source-tag">대기</span></div>
-          <div id="stats-content" class="stats-content"><div class="empty-insight"><div class="empty-icon">◈</div><strong>착수 데이터가 여기에 표시돼요</strong><p>봇이 수를 두면 실제 선택 빈도와 다른 주요 후보를 확인할 수 있습니다.</p></div></div>
+          <div id="stats-content" class="stats-content"><div class="empty-insight"><div class="empty-icon">◈</div><strong>착수 데이터가 여기에 표시돼요</strong><p>봇이 수를 두면 실제 선택 비율·승률과 다른 주요 후보를 확인할 수 있습니다.</p></div></div>
         </section>
 
 

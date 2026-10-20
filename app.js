@@ -2,6 +2,7 @@ import { Chess } from 'chess.js';
 import {ratingBucket,moveUci,normalizeExplorerUci,explorerMoveUci, gamesOf, evaluateBook, weightedChoice} from './book.js';
 import {LiveEngine,ENGINE_SCRIPT,formatWhiteScore,whitePerspective,sanVariation} from './engine-analysis.js';
 import {ReviewScorer,moveComparison,signedPawns,uciPosition} from './review-analysis.js';
+import {rates,selectPct,arrowGeometry} from './book-insights.js';
 
 'use strict';
 const $ = id => document.getElementById(id);
@@ -15,6 +16,7 @@ const WASM_URL='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 let game=null, activeColor='white', busy=false, selected=null, promotionOptions=null;
 let lichessToken='', maia=null, maiaPromise=null, recentBookErrors=0;
 let liveEngine=null, lastEngineEvaluation=null, reviewScorer=null;
+let showBookArrows=false;
 const escapeHtml = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const shortNum = n => Number(n).toLocaleString('ko-KR');
 const currentColor = () => game?.options.color || activeColor;
@@ -71,8 +73,68 @@ function positionAt(ply){
  return replay;
 }
 function viewedChess(){return game?.reviewMode?positionAt(game.reviewPly):game?.chess}
-function renderBoard(){drawSquares($('board'),placementMap(viewedChess()?.fen()||START_FEN),false,!busy?playableMoves():[])}
-function clickSquare(square){if(busy||!isHumanTurn())return;const moves=playableMoves();if(selected){const possibilities=moves.filter(m=>m.from===selected&&m.to===square);if(possibilities.length===1){selected=null;void humanMove(possibilities[0]);return}if(possibilities.length>1){promotionOptions=possibilities;showPromotion();return}}selected=moves.some(m=>m.from===square)?square:null;renderBoard()}
+function renderBoard(){
+ const preview=showBookArrows && game?.lastBot?.source==='lichess' && !game.reviewMode;
+ const fen=preview ? game.lastBot.beforeFen : (viewedChess()?.fen()||START_FEN);
+ drawSquares($('board'),placementMap(fen),false,!preview&&!busy?playableMoves():[]);
+ // The arrows are for the position BEFORE the bot's move, not today's board.
+ // Keep current board and engine state untouched, only change the visual preview.
+ $('book-arrow-layer').replaceChildren();
+ if(preview)renderBookArrows(game.lastBot);
+}
+function renderBookArrows(report){
+ const ns='http://www.w3.org/2000/svg',svg=$('book-arrow-layer');
+ const candidates=[report.selected,...report.alternatives].slice(0,4);
+ candidates.forEach((item,index)=>{
+  if(!item.from||!item.to)return;
+  let g;try{g=arrowGeometry(item.from,item.to,currentColor()==='white')}catch(_){return}
+  const chosen=index===0,color=chosen?'#00a57d':'#3488d7';
+  const line=document.createElementNS(ns,'line');
+  for(const [k,v] of Object.entries({x1:g.start.x,y1:g.start.y,x2:g.end.x,y2:g.end.y,stroke:color,'stroke-width':chosen?13:9,'stroke-linecap':'round',opacity:chosen?.93:.78}))line.setAttribute(k,String(v));
+  svg.append(line);
+  const head=document.createElementNS(ns,'polygon');
+  const size=chosen?17:13, x=g.end.x,y=g.end.y,cos=Math.cos(g.angle),sin=Math.sin(g.angle);
+  const corners=[[x+cos*size,y+sin*size],[x-cos*size/2-sin*size*.65,y-sin*size/2+cos*size*.65],[x-cos*size/2+sin*size*.65,y-sin*size/2-cos*size*.65]];
+  head.setAttribute('points',corners.map(p=>p.join(',')).join(' '));head.setAttribute('fill',color);head.setAttribute('opacity','0.93');svg.append(head);
+  // Keep the text in a compact, opaque label rather than overlapping the destination piece.
+  const labelX=Math.min(735,Math.max(65,g.label.x)),labelY=Math.min(765,Math.max(35,g.label.y));
+  const group=document.createElementNS(ns,'g');group.setAttribute('transform',`translate(${labelX},${labelY})`);
+  const rect=document.createElementNS(ns,'rect');
+  for(const [k,v] of Object.entries({x:-49,y:-15,width:98,height:31,rx:9,fill:'#11252a','fill-opacity':'.93',stroke:color,'stroke-width':3}))rect.setAttribute(k,String(v));
+  group.append(rect);
+  const text=document.createElementNS(ns,'text');
+  for(const [k,v] of Object.entries({x:0,y:7,'text-anchor':'middle','font-size':22,'font-weight':800,fill:'#f5faf9'}))text.setAttribute(k,String(v));
+  text.textContent=`${index+1} · ${item.percent.toFixed(1)}%`;
+  group.append(text);svg.append(group);
+ });
+}
+function renderBookRibbon(){
+ const bar=$('book-ribbon'),report=game?.lastBot;
+ const visible=report?.source==='lichess'&&!game.reviewMode;
+ bar.classList.toggle('hidden',!visible);
+ $('book-candidates-toggle').setAttribute('aria-pressed',String(showBookArrows&&visible));
+ $('book-candidates-toggle').textContent=showBookArrows&&visible?'화살표 닫기':'후보 화살표';
+ if(!visible){showBookArrows=false;return}
+ const s=report.selected;
+ $('book-ribbon-summary').textContent=`LICHESS · ${s.san} ${s.percent.toFixed(1)}% 선택 · 봇 승률 ${s.winRate.toFixed(1)}%`;
+ $('book-ribbon-note').classList.toggle('hidden',!showBookArrows);
+ const choices=$('book-ribbon-choices');
+ choices.classList.toggle('hidden',!showBookArrows);
+ if(showBookArrows){
+  choices.replaceChildren();
+  [report.selected,...report.alternatives].slice(0,4).forEach((item,i)=>{
+   const chip=document.createElement('span');chip.className='book-choice-chip'+(i===0?' chosen':'');
+   chip.textContent=`${i+1}. ${item.san} ${item.percent.toFixed(1)}%`;choices.append(chip);
+  });
+ }
+}
+function toggleBookArrows(){
+ if(game?.lastBot?.source!=='lichess'||game.reviewMode)return;
+ showBookArrows=!showBookArrows;
+ selected=null;renderBookRibbon();renderBoard();
+}
+
+function clickSquare(square){if(showBookArrows||busy||!isHumanTurn())return;const moves=playableMoves();if(selected){const possibilities=moves.filter(m=>m.from===selected&&m.to===square);if(possibilities.length===1){selected=null;void humanMove(possibilities[0]);return}if(possibilities.length>1){promotionOptions=possibilities;showPromotion();return}}selected=moves.some(m=>m.from===square)?square:null;renderBoard()}
 function showPromotion(){const popup=$('promotion-modal'),choices=$('promotion-choices');choices.replaceChildren();for(const kind of ['q','r','b','n']){const m=promotionOptions.find(x=>x.promotion===kind);if(!m)continue;const btn=document.createElement('button');btn.type='button';btn.textContent=PIECES[currentColor()==='white'?kind.toUpperCase():kind];btn.setAttribute('aria-label',`${NAMES[kind]}으로 승격`);btn.addEventListener('click',()=>{closePromotion();selected=null;void humanMove(m)});choices.append(btn)}popup.classList.remove('hidden')}
 function closePromotion(){$('promotion-modal').classList.add('hidden');promotionOptions=null}
 function setStartMode(){$('start-moves-area').classList.toggle('hidden',$('start-mode').value!=='moves');$('start-fen-area').classList.toggle('hidden',$('start-mode').value!=='fen');$('position-preview').classList.add('hidden');$('preview-error').classList.add('hidden')}
@@ -93,12 +155,24 @@ function renderControls(){if(!game){$('turn-pill').textContent='대국 대기 �
  $('start-button').innerHTML='새 대국 시작하기 <span aria-hidden="true">→</span>';
  const s=$('start-position-label');if(game.options.startMode!=='standard'){s.classList.remove('hidden');s.textContent=game.options.startMode==='moves'?`시작 수순: ${game.options.startMoves}`:`사용자 지정 FEN · ${game.baseFen}`}else s.classList.add('hidden');
 }
-function insightRow(x,selected=false){const pct=Number(x.percent)||0;return `<div class="stat-row"><span class="name">${escapeHtml(x.san)}</span><div class="stat-bar"><div class="stat-fill ${selected?'selected-fill':''}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div><span class="pct">${pct.toFixed(1)}%</span></div>`}
+function insightRow(x,selected=false){
+ const pct=Number(x.percent)||0;
+ return `<div class="book-stat-item ${selected?'book-stat-chosen':''}">
+  <div class="stat-row"><span class="name">${escapeHtml(x.san)}</span><div class="stat-bar"><div class="stat-fill ${selected?'selected-fill':''}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div><span class="pct">${pct.toFixed(1)}% 선택</span></div>
+  <div class="result-strip" role="img" aria-label="백 승리 ${x.whiteRate.toFixed(1)}%, 무승부 ${x.drawRate.toFixed(1)}%, 흑 승리 ${x.blackRate.toFixed(1)}%"><span class="result-white" style="width:${x.whiteRate}%"></span><span class="result-draw" style="width:${x.drawRate}%"></span><span class="result-black" style="width:${x.blackRate}%"></span></div>
+  <div class="result-legend"><span>승률 <b>${x.winRate.toFixed(1)}%</b></span><span>무 ${x.drawRate.toFixed(1)}%</span><span>패 ${x.lossRate.toFixed(1)}%</span><span class="book-count">${shortNum(x.count)}판</span></div>
+ </div>`;
+}
 function renderStats(){const el=$('stats-content'),tag=$('source-tag'),report=game?.lastBot;
- if(!report){tag.textContent='대기';el.innerHTML='<div class="empty-insight"><div class="empty-icon">◈</div><strong>착수 데이터가 여기에 표시돼요</strong><p>봇이 수를 두면 선택 비율과 다른 주요 후보가 나타납니다.</p></div>';return}
+ if(!report){tag.textContent='대기';el.innerHTML='<div class="empty-insight"><div class="empty-icon">◈</div><strong>착수 데이터가 여기에 표시돼요</strong><p>봇이 수를 두면 실제 선택 빈도와 다른 주요 후보를 확인할 수 있습니다.</p></div>';return}
  if(report.source==='maia'){tag.textContent='MAIA-3';el.innerHTML=`<div class="maia-note"><h3>${escapeHtml(report.move)} · Maia-3</h3><p>전환 사유: ${escapeHtml(report.reason)}</p><p>이 수는 브라우저에서 Maia-3 ONNX가 예측했으며, Lichess 등장 비율은 제공하지 않습니다.</p></div>`;return}
- tag.textContent='LICHESS DATA';const selected=report.selected;
- el.innerHTML=`<div class="insight-heading"><div><small>봇이 선택한 수</small><strong>${escapeHtml(selected.san)}</strong></div><span class="insight-percent">${selected.percent.toFixed(1)}%</span></div><p class="insight-desc">실제 ${shortNum(selected.count)} / ${shortNum(report.total)}판에서 선택</p>${insightRow(selected,true)}<div class="alternative-title">다른 주요 후보</div>${report.alternatives.map(x=>insightRow(x)).join('')||'<p class="insight-desc">다른 주요 후보 없음</p>'}<div class="insight-footer">${escapeHtml(SPEED_LABELS[report.speed])} · 레이팅 ${report.bucket} 구간 · 전체 ${shortNum(report.total)}판<br/>조회 후보 포함 비율 ${(100*report.represented/report.total).toFixed(1)}%<br/>선택 확률이며 엔진 정확도·승률이 아닙니다.</div>`;
+ tag.textContent='LICHESS DATA';const s=report.selected;
+ el.innerHTML=`<div class="insight-heading"><div><small>봇이 선택한 수</small><strong>${escapeHtml(s.san)}</strong></div><span class="insight-percent">${s.percent.toFixed(1)}%</span></div>
+  <p class="insight-desc">실제 ${shortNum(s.count)} / ${shortNum(report.total)}판에서 선택 · 봇(${report.mover==='w'?'백':'흑'}) 승률 <b>${s.winRate.toFixed(1)}%</b></p>
+  ${insightRow(s,true)}<div class="alternative-title">다른 주요 후보 · 선택 비율 + 승/무/패</div>
+  ${report.alternatives.map(x=>insightRow(x)).join('')||'<p class="insight-desc">다른 주요 후보 없음</p>'}
+  <div class="insight-footer">승/무/패 비율은 <b>그 수를 둔 쪽(${report.mover==='w'?'백':'흑'}) 기준</b>이며, 승률과 선택 비율은 서로 다른 값입니다.<br/>
+  ${escapeHtml(SPEED_LABELS[report.speed])} · 레이팅 ${report.bucket} 구간 · 전체 ${shortNum(report.total)}판 · 포함 ${(100*report.represented/report.total).toFixed(1)}%</div>`;
 }
 // A replay from the original FEN preserves move numbering and setup-move boundaries.
 function getMoveFrames(){
@@ -164,7 +238,7 @@ function renderHistory(){
   $('review-status').textContent=`기보 평가 ${done}/${total}수 완료 · 깊이 ${reviewScorer.depth} · 최선 수의 가상 착수도 별도 평가`;
  }
 }
-function showReview(ply){
+function showReview(ply){showBookArrows=false;
  if(!game||busy||isPlaying())return;
  game.reviewMode=true;game.reviewPly=Math.max(game.setupCount,Math.min(game.chess.history().length,ply));
  selected=null;render();
@@ -174,7 +248,7 @@ function finishGame(){
  if(!confirm('현재 대국을 여기서 마칠까요? 경기 결과는 미완료(*)로 저장됩니다.'))return;
  game.ended=true;render();
 }
-function render(){renderBoard();renderControls();renderStats();renderHistory();refreshAnalysis();scheduleReviewPositions()}
+function render(){renderBookRibbon();renderBoard();renderControls();renderStats();renderHistory();refreshAnalysis();scheduleReviewPositions()}
 
 function renderAnalysis(data){
  lastEngineEvaluation=data;
@@ -270,8 +344,17 @@ async function getBookChoice(){
   recentBookErrors=0;
   if(!valid.ok)return {reason:valid.reason};
   const choice=weightedChoice(valid.rows),picked=legal.find(m=>moveUci(m)===choice.matchedUci);
-  const percent=e=>100*e.count/valid.total;
-  const report={source:'lichess',selected:{san:picked.san,percent:percent(choice),count:choice.count},alternatives:valid.rows.filter(x=>x.matchedUci!==choice.matchedUci).slice(0,3).map(x=>({san:x.san,percent:percent(x),count:x.count})),total:valid.total,represented:valid.represented,bucket:ratingBucket(game.options.elo),speed:game.options.speed};
+  const mover=ch.turn();
+  const toView=row=>{
+   const legalMove=legal.find(m=>moveUci(m)===row.matchedUci),r=rates(row,mover);
+   return {san:legalMove?.san||row.san,from:legalMove?.from,to:legalMove?.to,
+    percent:selectPct(row.count,valid.total),count:row.count,
+    whiteRate:r.white,drawRate:r.draws,blackRate:r.black,
+    winRate:r.win,lossRate:r.loss};
+  };
+  const report={source:'lichess',mover,beforeFen:ch.fen(),selected:toView(choice),
+   alternatives:valid.rows.filter(x=>x.matchedUci!==choice.matchedUci).slice(0,3).map(toView),
+   total:valid.total,represented:valid.represented,bucket:ratingBucket(game.options.elo),speed:game.options.speed};
   return {move:picked,report};
  }catch(error){recentBookErrors++;return {reason:`통계 API ${error?.name==='AbortError'?'시간 초과':(error?.message||'연결 오류')}`}}
  finally{clearTimeout(timer)}
@@ -295,7 +378,7 @@ async function getMaiaMove(){const m=await prepareMaia();const legal=game.chess.
  if(!pick)throw new Error(`Maia-3가 현재 포지션에 합법적이지 않은 수를 반환했습니다 (${uci||'없음'}).`);
  return pick}
 async function botTurn(){if(!game||!isPlaying()||isHumanTurn())return;
- const current=game;setBusy(true,true);clearError();
+ showBookArrows=false;const current=game;setBusy(true,true);clearError();
  try{const choice=await getBookChoice();const move=choice.move||await getMaiaMove();
    if(current!==game)return;
    game.lastBot=choice.move?choice.report:{source:'maia',move:move.san,reason:choice.reason};
@@ -304,16 +387,16 @@ async function botTurn(){if(!game||!isPlaying()||isHumanTurn())return;
  finally{setBusy(false);render()}
 }
 async function humanMove(move){if(busy||!isHumanTurn())return;
- try{const result=game.chess.move(move);if(!result)return;game.lastMove={from:result.from,to:result.to};selected=null;game.lastBot=null;render();if(isPlaying()&&!isHumanTurn())await botTurn()}
+ showBookArrows=false;try{const result=game.chess.move(move);if(!result)return;game.lastMove={from:result.from,to:result.to};selected=null;game.lastBot=null;render();if(isPlaying()&&!isHumanTurn())await botTurn()}
  catch(e){showError('이동할 수 없습니다: '+e.message)}
 }
 async function startGame(){if(busy)return;clearError();
- try{const opts=getSettings(),s=configurePosition(opts);game={...s,options:opts,lastBot:null,lastMove:null,resigned:false,ended:false,reviewMode:false,reviewPly:0,initialBotTurn:toColor(s.chess.turn())!==opts.color};recentBookErrors=0;selected=null;if(reviewScorer)reviewScorer.reset(10);$('retry-bot').classList.add('hidden');render();if(isPlaying()&&!isHumanTurn())await botTurn()}
+ try{const opts=getSettings(),s=configurePosition(opts);game={...s,options:opts,lastBot:null,lastMove:null,resigned:false,ended:false,reviewMode:false,reviewPly:0,initialBotTurn:toColor(s.chess.turn())!==opts.color};recentBookErrors=0;selected=null;showBookArrows=false;if(reviewScorer)reviewScorer.reset(10);$('retry-bot').classList.add('hidden');render();if(isPlaying()&&!isHumanTurn())await botTurn()}
  catch(e){showError(e.message)}
 }
 function undo(){if(busy||!game||game.chess.history().length<game.setupCount+(game.initialBotTurn?2:1))return;
  game.chess.undo();if(!isHumanTurn()&&game.chess.history().length>game.setupCount)game.chess.undo();
- game.lastBot=null;game.lastMove=null;selected=null;$('retry-bot').classList.add('hidden');clearError();render();if(!isHumanTurn()&&isPlaying())void botTurn()}
+ game.lastBot=null;game.lastMove=null;selected=null;showBookArrows=false;$('retry-bot').classList.add('hidden');clearError();render();if(!isHumanTurn()&&isPlaying())void botTurn()}
 function exportPgn(){
  if(!game)return;
  // Rebuild the game so comments are saved as standard PGN annotations.
@@ -351,6 +434,7 @@ async function testToken(){const token=$('lichess-token').value.trim();if(!token
 }
 function init(){
  $('analysis-toggle').addEventListener('change',()=>void toggleAnalysis());
+ $('book-candidates-toggle').addEventListener('click',toggleBookArrows);
  $('analysis-depth').addEventListener('change',()=>{
   liveEngine?.setDepth($('analysis-depth').value);
   // History is always scored at fixed depth 10 for mobile performance.

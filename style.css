@@ -105,3 +105,32 @@
  .move-metrics{font-size:9px}
  .toolbar-actions{flex-wrap:wrap;gap:10px}
 }
+
+/* Lichess result bars and tap-to-preview book arrows (mobile first) */
+.book-ribbon{margin:0 0 9px;border:1px solid #3e776d;border-radius:11px;background:#15302e;padding:9px 11px;color:#d8f2e8}
+.book-ribbon-header{display:flex;align-items:center;gap:10px;justify-content:space-between}
+.book-ribbon-header>span{min-width:0;font-size:12px;font-weight:800;line-height:1.45;overflow-wrap:anywhere}
+.book-toggle{white-space:nowrap;border-color:#78b3a1;color:#e2fff0;padding:8px 9px;font-size:11px;flex-shrink:0}
+.book-toggle[aria-pressed="true"]{background:#5abfa2;color:#102a25;border-color:#5abfa2}
+.book-ribbon-note{margin:8px 0 0;font-size:11px;color:#b3ded3;line-height:1.6}
+.book-arrow-layer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:4;overflow:visible}
+.book-stat-item{background:#1b3037;border:1px solid #2d484e;border-radius:9px;padding:9px;margin-bottom:8px}
+.book-stat-chosen{border-color:#70b9a3;background:#203b3a}
+.book-stat-item .stat-row{grid-template-columns:45px minmax(0,1fr) 85px;margin:0 0 7px;gap:7px}
+.book-stat-item .stat-row .pct{text-align:right;font-size:10px}
+.result-strip{display:flex;overflow:hidden;height:8px;border-radius:4px;border:1px solid #51616b;background:#1b2b31;margin:7px 0 5px}
+.result-strip span{display:block;height:100%}
+.result-white{background:#ebf0e9}.result-draw{background:#91a4ad}.result-black{background:#22262c}
+.result-legend{display:flex;gap:8px;flex-wrap:wrap;color:#a8c4c1;font-size:10px}
+.result-legend b{color:#d5fae9}
+.book-count{margin-left:auto;color:#8da9a8}
+@media(max-width:610px){
+  .book-ribbon{padding:8px}
+  .book-ribbon-header>span{font-size:11px}
+  .book-toggle{font-size:10px;padding:7px 8px}
+  .book-stat-item{padding:8px}
+}
+
+.book-ribbon-choices{display:flex;gap:5px;flex-wrap:wrap;margin:9px 0 0}
+.book-choice-chip{background:#273d48;border:1px solid #47647b;border-radius:6px;color:#d0e6ef;padding:4px 6px;font-size:10px;font-weight:750;white-space:nowrap}
+.book-choice-chip.chosen{background:#1f6354;border-color:#51bc9a;color:#ecfff6}
