@@ -3,6 +3,7 @@ import {ratingBucket,moveUci,normalizeExplorerUci,explorerMoveUci, gamesOf, eval
 import {LiveEngine,ENGINE_SCRIPT,formatWhiteScore,whitePerspective,sanVariation} from './engine-analysis.js';
 import {ReviewScorer,moveComparison,signedPawns,uciPosition} from './review-analysis.js';
 import {rates,selectPct,arrowGeometry} from './book-insights.js';
+import { Maia1 } from './maia1.js';
 
 'use strict';
 const $ = id => document.getElementById(id);
@@ -15,6 +16,9 @@ const MODEL_URL='https://huggingface.co/cemoss17/maia3-onnx/resolve/main/maia3_5
 const WASM_URL='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 let game=null, activeColor='white', busy=false, selected=null, promotionOptions=null;
 let lichessToken='', maia=null, maiaPromise=null, recentBookErrors=0;
+const maia1Models=new Map(), maia1Promises=new Map();
+const MAIA1_TYPES={'maia1-1100':1100,'maia1-1500':1500,'maia1-1800':1800,'maia1-1900':1900};
+const modelName=m=>m==='maia1-1800'?'공식 Maia 1800':m==='maia1-1900'?'Lichess Maia 1900 (@maia9)':m==='maia3'?'Maia-3 5M':`Maia-1 ${MAIA1_TYPES[m]}`;
 let liveEngine=null, lastEngineEvaluation=null, reviewScorer=null;
 let showBookArrows=false;
 const escapeHtml = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -25,7 +29,7 @@ function placementMap(fen){const map={};fen.split(' ')[0].split('/').forEach((ro
 function isPlaying(){return game && !game.resigned && !game.ended && !game.chess.isGameOver()}
 function isHumanTurn(){return isPlaying() && !game.reviewMode && toColor(game.chess.turn())===game.options.color}
 function playableMoves(){return isHumanTurn()?game.chess.moves({verbose:true}):[]}
-function getSettings(){return {elo:Number($('elo').value),color:activeColor,speed:$('speed').value,minGames:Number($('min-games').value),startMode:$('start-mode').value,startMoves:$('start-moves').value.trim(),startFen:$('start-fen').value.trim()}}
+function getSettings(){return {elo:Number($('elo').value),color:activeColor,speed:$('speed').value,minGames:Number($('min-games').value),model:$('model').value,useBook:$('use-opening-book').checked,startMode:$('start-mode').value,startMoves:$('start-moves').value.trim(),startFen:$('start-fen').value.trim()}}
 function setBusy(flag,bot=false){busy=flag;$('board-wait').classList.toggle('hidden',!flag||!bot);$('start-button').disabled=flag;$('top-new').disabled=flag;renderBoard();renderControls()}
 function showError(message){const a=$('alert');a.textContent=message;a.classList.remove('hidden')}
 function clearError(){$('alert').classList.add('hidden')}
@@ -142,7 +146,7 @@ function previewPosition(){try{const p=configurePosition(getSettings());drawSqua
 
 function renderControls(){if(!game){$('turn-pill').textContent='대국 대기 중';$('move-feedback').textContent='새 대국을 시작하세요';$('undo-button').disabled=true;$('pgn-button').disabled=true;$('resign-button').disabled=true;$('finish-button').disabled=true;$('review-start').disabled=true;$('review-prev').disabled=true;$('review-next').disabled=true;$('start-position-label').classList.add('hidden');return}
  const over=!isPlaying(),me=game.options.color==='black',ch=game.chess;
- $('top-player').textContent=`Humanlike Bot · ${game.options.elo}`;$('top-player-sub').textContent='Lichess + Maia3-5M ONNX';$('bottom-player-sub').textContent=me?'흑으로 플레이':'백으로 플레이';
+ $('top-player').textContent=`Humanlike Bot · ${game.options.model==='maia3'?game.options.elo:MAIA1_TYPES[game.options.model]}`;$('top-player-sub').textContent=`${game.options.useBook?'Lichess + ':''}${modelName(game.options.model)}`;$('bottom-player-sub').textContent=me?'흑으로 플레이':'백으로 플레이';
  $('turn-pill').textContent=game.reviewMode?'복기 중':over?'대국 종료':ch.turn()==='w'?'백 차례':'흑 차례';
  if(game.reviewMode){$('move-feedback').textContent='수순을 선택해 복기할 수 있어요'}else if(over){$('move-feedback').textContent=game.resigned?'기권했습니다':game.ended?'직접 대국 종료':ch.isCheckmate()?(toColor(ch.turn())===game.options.color?'패배':'승리'):'무승부'} else $('move-feedback').textContent=isHumanTurn()?(ch.isCheck()?'체크 · 내 차례':'내 차례'):'봇 차례';
  $('undo-button').disabled=busy||over||game.reviewMode||game.chess.history().length<game.setupCount+(game.initialBotTurn?2:1);
@@ -165,7 +169,7 @@ function insightRow(x,selected=false){
 }
 function renderStats(){const el=$('stats-content'),tag=$('source-tag'),report=game?.lastBot;
  if(!report){tag.textContent='대기';el.innerHTML='<div class="empty-insight"><div class="empty-icon">◈</div><strong>착수 데이터가 여기에 표시돼요</strong><p>봇이 수를 두면 실제 선택 빈도와 다른 주요 후보를 확인할 수 있습니다.</p></div>';return}
- if(report.source==='maia'){tag.textContent='MAIA-3';el.innerHTML=`<div class="maia-note"><h3>${escapeHtml(report.move)} · Maia-3</h3><p>전환 사유: ${escapeHtml(report.reason)}</p><p>이 수는 브라우저에서 Maia-3 ONNX가 예측했으며, Lichess 등장 비율은 제공하지 않습니다.</p></div>`;return}
+ if(report.source==='maia'){const label=report.modelLabel||'Maia-3';tag.textContent=label;el.innerHTML=`<div class="maia-note"><h3>${escapeHtml(report.move)} · ${escapeHtml(label)}</h3><p>선택 사유: ${escapeHtml(report.reason)}</p><p>이 수는 브라우저의 ${escapeHtml(label)} 모델이 예측했으며, Lichess 등장 비율은 제공하지 않습니다.</p></div>`;return}
  tag.textContent='LICHESS DATA';const s=report.selected;
  el.innerHTML=`<div class="insight-heading"><div><small>봇이 선택한 수</small><strong>${escapeHtml(s.san)}</strong></div><span class="insight-percent">${s.percent.toFixed(1)}%</span></div>
   <p class="insight-desc">실제 ${shortNum(s.count)} / ${shortNum(report.total)}판에서 선택 · 봇(${report.mover==='w'?'백':'흑'}) 승률 <b>${s.winRate.toFixed(1)}%</b></p>
@@ -319,6 +323,7 @@ function plyOf(chess){const f=chess.fen().split(' ');return (Number(f[5])-1)*2+(
 function priorFens(){const replay=new Chess(game.baseFen),out=[];for(const move of game.chess.history({verbose:true})){out.push(replay.fen());replay.move(move)}return out.slice(-8)}
 function bookReason(ch){if(plyOf(ch)>=BOOK_LIMIT)return `오프닝 제한 ${BOOK_LIMIT}반수 초과`;if(!lichessToken)return 'Lichess 토큰 미입력';if(recentBookErrors>=3)return 'Lichess 오류가 반복되어 잠시 통계 조회 중지';return ''}
 async function getBookChoice(){
+ if(!game.options.useBook)return {reason:'설정에서 Lichess 오프닝 통계를 사용하지 않도록 선택함'};
  const ch=game.chess,why=bookReason(ch);if(why)return {reason:why};
  const params=new URLSearchParams({variant:'standard',ratings:String(ratingBucket(game.options.elo)),speeds:game.options.speed,moves:'16',topGames:'0',recentGames:'0'});
  if(game.options.startMode==='fen')params.set('fen',ch.fen());else params.set('play',ch.history({verbose:true}).map(explorerMoveUci).join(','));
@@ -373,15 +378,36 @@ async function prepareMaia(){
  })();
  try{return await maiaPromise}catch(e){maiaPromise=null;$('model-status').textContent=`모델 로딩 실패: ${e.message||e}`;throw new Error(`Maia-3 초기화 실패: ${e.message||e}. 네트워크 또는 브라우저 호환성을 확인하세요.`)}
 }
-async function getMaiaMove(){const m=await prepareMaia();const legal=game.chess.moves({verbose:true}),result=await m.predict({fen:game.chess.fen(),priorFens:priorFens(),selfElo:game.options.elo,oppoElo:game.options.elo,temperature:1,topP:1,topK:5});
+async function prepareMaia1(elo) {
+ if(maia1Models.has(elo))return maia1Models.get(elo);
+ if(maia1Promises.has(elo))return maia1Promises.get(elo);
+ const promise=(async()=>{
+   const ort=await import('onnxruntime-web');
+   ort.env.wasm.wasmPaths=WASM_URL;ort.env.wasm.numThreads=1;
+   const engine=new Maia1(elo,{onStatus:message=>{$('model-status').textContent=message;setMessage(message)}});
+   await engine.load(ort);
+   maia1Models.set(elo,engine);
+   return engine;
+ })();
+ maia1Promises.set(elo,promise);
+ try{return await promise}finally{maia1Promises.delete(elo)}
+}
+async function getMaiaMove(){
+ if(game.options.model!=='maia3'){
+   const elo=MAIA1_TYPES[game.options.model],m=await prepareMaia1(elo);
+   const result=await m.predict(game.chess,{sample:game.options.model==='maia1-1800'});
+   return result.move;
+ }
+ const m=await prepareMaia();const legal=game.chess.moves({verbose:true}),result=await m.predict({fen:game.chess.fen(),priorFens:priorFens(),selfElo:game.options.elo,oppoElo:game.options.elo,temperature:1,topP:1,topK:5});
  const uci=result.bestMove;const pick=legal.find(x=>moveUci(x)===normalizeExplorerUci(uci));
  if(!pick)throw new Error(`Maia-3가 현재 포지션에 합법적이지 않은 수를 반환했습니다 (${uci||'없음'}).`);
- return pick}
+ return pick;
+}
 async function botTurn(){if(!game||!isPlaying()||isHumanTurn())return;
  showBookArrows=false;const current=game;setBusy(true,true);clearError();
  try{const choice=await getBookChoice();const move=choice.move||await getMaiaMove();
    if(current!==game)return;
-   game.lastBot=choice.move?choice.report:{source:'maia',move:move.san,reason:choice.reason};
+   game.lastBot=choice.move?choice.report:{source:'maia',move:move.san,modelLabel:modelName(game.options.model),reason:choice.reason};
    game.chess.move(move);game.lastMove={from:move.from,to:move.to};selected=null;setMessage('봇이 착수했습니다');
  }catch(e){showError(e.message+' — 연결을 확인한 뒤 아래 「봇 착수 다시 시도」를 눌러 주세요.');$('retry-bot').classList.remove('hidden')}
  finally{setBusy(false);render()}
@@ -402,8 +428,8 @@ function exportPgn(){
  // Rebuild the game so comments are saved as standard PGN annotations.
  const ch=new Chess(game.baseFen),frames=getMoveFrames();
  ch.setHeader('Event','Humanlike Browser Chess');
- ch.setHeader('White',game.options.color==='white'?'Human':'Maia/Lichess');
- ch.setHeader('Black',game.options.color==='black'?'Human':'Maia/Lichess');
+ ch.setHeader('White',game.options.color==='white'?'Human':modelName(game.options.model));
+ ch.setHeader('Black',game.options.color==='black'?'Human':modelName(game.options.model));
  ch.setHeader('Result',game.resigned?(game.options.color==='white'?'0-1':'1-0'):
    ch.isGameOver()?(ch.isCheckmate()?(ch.turn()==='w'?'0-1':'1-0'):'1/2-1/2'):'*');
  for(const frame of frames){
@@ -445,7 +471,30 @@ function init(){
  $('opening-preset').addEventListener('change',()=>{if($('opening-preset').value)$('start-moves').value=$('opening-preset').value;$('position-preview').classList.add('hidden')});
  for(const id of ['start-moves','start-fen'])$(id).addEventListener('input',()=>{$('position-preview').classList.add('hidden')});
  $('preview-position').addEventListener('click',previewPosition);$('test-token').addEventListener('click',()=>void testToken());
- $('test-maia').addEventListener('click',async()=>{$('test-maia').disabled=true;try{await prepareMaia();const result=await maia.predict({fen:START_FEN,selfElo:1500,oppoElo:1500,temperature:1,topK:1});if(!result.bestMove)throw new Error('AI가 수를 반환하지 않았습니다.');$('model-status').textContent=`AI 착수 예측 성공 (${result.bestMove}). 실제 기기에서 작동합니다.`}catch(e){$('model-status').textContent=e.message}finally{$('test-maia').disabled=false}});
+ const describeSelectedModel = () => {
+   const m=$('model').value;
+   $('model-description').textContent=m==='maia1-1800'
+     ? 'maiachess.com의 Maia-1 1800 가중치와 sampleMoves=true에 가까운 수 선택 방식으로 작동합니다. 세부 실행 환경이 달라 모든 응수가 동일하지는 않을 수 있습니다.'
+     : 'Lichess @maia9의 Maia-1 1900 가중치로 가장 높은 예측 확률의 수를 선택합니다. Lichess 봇 전용 오프닝북과 착수 시간 정책은 포함되지 않습니다.';
+   $('elo-field-label').textContent='오프닝 통계 레이팅';
+   $('test-maia').textContent='선택 모델 로딩 테스트';
+   $('model-status').textContent='선택한 모델은 아직 테스트하지 않았습니다.';
+ };
+ $('model').addEventListener('change',describeSelectedModel);
+ describeSelectedModel();
+ $('test-maia').addEventListener('click',async()=>{$('test-maia').disabled=true;
+  try{
+   const selected=$('model').value;
+   let move;
+   if(selected==='maia3'){
+      await prepareMaia();const result=await maia.predict({fen:START_FEN,selfElo:1500,oppoElo:1500,temperature:1,topK:1});move=result.bestMove;
+   } else {
+      const m=await prepareMaia1(MAIA1_TYPES[selected]);const result=await m.predict(new Chess(START_FEN),{sample:selected==='maia1-1800'});move=result.uci;
+   }
+   if(!move)throw new Error('AI가 수를 반환하지 않았습니다.');
+   $('model-status').textContent=`${modelName(selected)} 착수 예측 성공 (${move}).`;
+  }catch(e){$('model-status').textContent='모델 테스트 실패: '+(e.message||e)}finally{$('test-maia').disabled=false}
+ });
  for(const b of document.querySelectorAll('[data-color]'))b.addEventListener('click',()=>{activeColor=b.dataset.color;document.querySelectorAll('[data-color]').forEach(x=>{x.classList.toggle('active',x===b);x.setAttribute('aria-pressed',String(x===b))});if(!game)renderBoard()});
  $('start-button').addEventListener('click',()=>void startGame());$('top-new').addEventListener('click',()=>void startGame());
  $('undo-button').addEventListener('click',undo);$('pgn-button').addEventListener('click',exportPgn);
