@@ -390,7 +390,17 @@ async function prepareMaia1(elo) {
    return engine;
  })();
  maia1Promises.set(elo,promise);
- try{return await promise}finally{maia1Promises.delete(elo)}
+ try{return await promise}
+ catch(error){
+  const msg=String(error?.message||error);
+  const hint=/fetch|network|CORS|status/i.test(msg)
+    ? '모델 파일 다운로드가 실패했습니다. 브라우저 인터넷 연결과 Hugging Face 접속을 확인하세요.'
+    : /wasm|backend|ort|operator|tensor/i.test(msg)
+    ? '브라우저 ONNX/WASM 호환성 오류일 수 있습니다.'
+    : '모델 추론 파일이나 변환 형식을 확인해야 합니다.';
+  $('model-status').textContent=`Maia-1 ${elo} 로딩 실패: ${msg} · ${hint}`;
+  throw new Error(`Maia-1 ${elo} 로딩 실패: ${msg} · ${hint}`);
+ }finally{maia1Promises.delete(elo)}
 }
 async function getMaiaMove(){
  if(game.options.model!=='maia3'){
@@ -511,5 +521,6 @@ function init(){
  $('retry-bot').addEventListener('click',()=>{if(!busy){$('retry-bot').classList.add('hidden');void botTurn()}});
  $('promotion-cancel').addEventListener('click',()=>{closePromotion();renderBoard()});document.addEventListener('keydown',e=>{if(e.key==='Escape'&&promotionOptions){closePromotion();renderBoard()}});
  setStartMode();render();
+ window.__HUMANLIKE_READY__=true;
 }
 init();

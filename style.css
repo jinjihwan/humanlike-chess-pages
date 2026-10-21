@@ -134,3 +134,5 @@
 .book-ribbon-choices{display:flex;gap:5px;flex-wrap:wrap;margin:9px 0 0}
 .book-choice-chip{background:#273d48;border:1px solid #47647b;border-radius:6px;color:#d0e6ef;padding:4px 6px;font-size:10px;font-weight:750;white-space:nowrap}
 .book-choice-chip.chosen{background:#1f6354;border-color:#51bc9a;color:#ecfff6}
+
+.maia-choice-check{display:flex;gap:8px;align-items:center;font-size:0.9rem;margin:12px 0 6px;cursor:pointer}.maia-choice-check input{width:16px;height:16px;flex-shrink:0}

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#101820" />
   <meta name="description" content="Lichess 실제 오프닝 수 선택 통계와 Maia-3의 인간형 착수 모델로 대국하는 체스 웹앱" />
   <title>Humanlike Chess — 사람처럼 두는 체스</title>
-  <link rel="stylesheet" href="./style.css?v=maia-two-20261021" />
+  <link rel="stylesheet" href="./style.css?v=maia-recovery-20261021b" />
   <meta name="referrer" content="no-referrer" />
   <script type="importmap">
   {"imports": {
@@ -15,7 +15,41 @@
     "onnxruntime-web": "https://esm.sh/onnxruntime-web@1.22.0"
   }}
   </script>
-  <script type="module" src="./app.js?v=maia-two-20261021"></script>
+  <script>
+  // Boot diagnostics run separately so a missing imported module cannot hide the error.
+  (() => {
+    let bootError = '';
+    const report = (msg) => {
+      bootError = String(msg || '알 수 없는 오류');
+      const status = document.getElementById('model-status');
+      if (status) status.textContent = '사이트 초기화 실패: ' + bootError + ' · 파일 업로드를 확인하세요.';
+      const alert = document.getElementById('alert');
+      if (alert) { alert.textContent = '사이트 초기화 실패: ' + bootError + ' (app.js / maia1.js 등 파일 누락 여부 확인)'; alert.classList.remove('hidden'); }
+    };
+    window.addEventListener('error', (event) => {
+      if (!window.__HUMANLIKE_READY__) {
+        const msg = event?.message || (event?.target?.src ? '스크립트 로딩 오류: ' + event.target.src : '자바스크립트 모듈 로딩 오류');
+        report(msg);
+      }
+    }, true);
+    window.addEventListener('unhandledrejection', (event) => {
+      if (!window.__HUMANLIKE_READY__) report(event.reason?.message || event.reason || '초기화 중 Promise 오류');
+    });
+    window.addEventListener('DOMContentLoaded', () => {
+      setTimeout(async () => {
+        if (window.__HUMANLIKE_READY__) return;
+        const deps = ['app.js', 'maia1.js', 'book.js', 'book-insights.js', 'engine-analysis.js', 'review-analysis.js'];
+        const missing = [];
+        for (const dep of deps) {
+          try { const r = await fetch(new URL('./' + dep, location.href), {cache:'no-store'}); if (!r.ok) missing.push(dep + ' HTTP ' + r.status); }
+          catch (_) { missing.push(dep + ' 접근 실패'); }
+        }
+        if (!window.__HUMANLIKE_READY__) report(missing.length ? '필수 파일 누락: ' + missing.join(', ') : (bootError || '외부 CDN 또는 JS 모듈 오류. 인터넷 연결과 콘솔을 확인하세요.'));
+      }, 1800);
+    }, {once:true});
+  })();
+  </script>
+  <script type="module" src="./app.js?v=maia-recovery-20261021b"></script>
 </head>
 <body>
   <div class="shell">
